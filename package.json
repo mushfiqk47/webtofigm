@@ -1,0 +1,27 @@
+{
+  "name": "html-to-figma",
+  "version": "1.0.0",
+  "description": "Production-grade HTML to Figma conversion plugin",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"npm run build:sandbox -- --watch\" \"npm run build:ui -- --watch\"",
+    "build": "npm run build:sandbox && npm run build:ui",
+    "build:sandbox": "esbuild src/sandbox/code.ts --bundle --outfile=dist/code.js --target=es2020 --format=esm",
+    "build:ui": "esbuild src/ui/ui.ts --bundle --outfile=dist/ui.js --target=es2020 --format=iife && node scripts/build-ui.js",
+    "build:extension": "esbuild chrome-extension/content-script.ts --bundle --outfile=chrome-extension/content-script.js --target=es2020 --format=iife",
+    "build:all": "npm run build && npm run build:extension",
+    "typecheck": "tsc --noEmit",
+    "test": "jest"
+  },
+  "devDependencies": {
+    "@figma/plugin-typings": "^1.98.0",
+    "@types/jest": "^30.0.0",
+    "concurrently": "^8.2.2",
+    "esbuild": "^0.20.0",
+    "jest": "^30.2.0",
+    "jest-environment-jsdom": "^30.2.0",
+    "ts-jest": "^29.4.6",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  }
+}

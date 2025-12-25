@@ -1,0 +1,19 @@
+{
+  "name": "HTML to Figma",
+  "id": "1586057546569999198",
+  "api": "1.0.0",
+  "main": "dist/code.js",
+  "ui": "dist/ui.html",
+  "capabilities": [],
+  "enableProposedApi": false,
+  "documentAccess": "dynamic-page",
+  "editorType": [
+    "figma"
+  ],
+  "networkAccess": {
+    "allowedDomains": [
+      "*"
+    ],
+    "reasoning": "Required to fetch HTML content and assets from external URLs"
+  }
+}

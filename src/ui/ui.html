@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Web to Figma</title>
+</head>
+
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="app-header">
+            <h1 class="app-title">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <rect width="24" height="24" rx="8" fill="url(#logo_grad)" />
+                    <path d="M8 12H16M12 8V16" stroke="white" stroke-width="2" stroke-linecap="round" />
+                    <defs>
+                        <linearGradient id="logo_grad" x1="0" y1="0" x2="24" y2="24" gradientUnits="userSpaceOnUse">
+                            <stop stop-color="#6366F1" />
+                            <stop offset="1" stop-color="#8B5CF6" />
+                        </linearGradient>
+                    </defs>
+                </svg>
+                Web to Figma
+            </h1>
+        </header>
+
+        <!-- Main Content -->
+        <main class="app-content">
+            <!-- Upload Section -->
+            <div id="upload-zone" class="upload-zone">
+                <div class="upload-icon">
+                    <svg width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M24 32V16M24 16L16 24M24 16L32 24" stroke="currentColor" stroke-width="3"
+                            stroke-linecap="round" stroke-linejoin="round" />
+                        <path d="M8 32V36C8 38.2091 9.79086 40 12 40H36C38.2091 40 40 38.2091 40 36V32"
+                            stroke="currentColor" stroke-width="3" stroke-linecap="round" />
+                    </svg>
+                </div>
+                <p class="upload-text">Drop .htfig file here</p>
+                <p class="upload-hint">or click to browse local files</p>
+                <input type="file" id="file-input" accept=".htfig" hidden>
+            </div>
+
+            <!-- File Info (Hidden by default) -->
+            <div id="file-info" class="file-card hidden">
+                <div class="file-icon-wrapper">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                        <polyline points="14 2 14 8 20 8"></polyline>
+                        <line x1="12" y1="18" x2="12" y2="12"></line>
+                        <line x1="9" y1="15" x2="15" y2="15"></line>
+                    </svg>
+                </div>
+                <div class="file-details">
+                    <span id="file-name" class="file-name">--</span>
+                    <span id="file-meta" class="file-meta">--</span>
+                </div>
+                <button id="btn-remove" class="btn-remove" title="Remove file">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="18" y1="6" x2="6" y2="18"></line>
+                        <line x1="6" y1="6" x2="18" y2="18"></line>
+                    </svg>
+                </button>
+            </div>
+
+            <!-- Error Box (Hidden by default) -->
+            <div id="error-box" class="error-message hidden">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <line x1="12" y1="8" x2="12" y2="12"></line>
+                    <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                </svg>
+                <div class="error-content">
+                    <strong id="error-title">Error</strong>
+                    <span id="error-message">--</span>
+                </div>
+            </div>
+
+            <!-- Actions -->
+            <button id="btn-import" class="btn btn--primary" disabled>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                    <polyline points="7 10 12 15 17 10"></polyline>
+                    <line x1="12" y1="15" x2="12" y2="3"></line>
+                </svg>
+                Import to Figma
+            </button>
+        </main>
+
+        <!-- Footer -->
+        <footer class="app-footer">
+            <div id="status-bar" class="status-bar" data-state="idle">
+                <span class="status-dot"></span>
+                <span id="status-text">Ready to import</span>
+            </div>
+        </footer>
+    </div>
+    <!-- Script injected by Figma build -->
+</body>
+
+</html>
