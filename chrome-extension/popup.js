@@ -166,6 +166,8 @@ async function capturePage() {
 
         // Content Script now returns the fully generated .htfig string in response.data
         const htfigContent = response.data;
+        const warnings = response.warnings || [];
+        const stats = response.stats || {};
 
         if (!htfigContent) {
             throw new Error('Received empty data from capture');
@@ -183,7 +185,13 @@ async function capturePage() {
         downloadFile(htfigContent, filename);
 
         updateProgress(100, 'Complete!');
-        showStatus(`✓ Capture successful. File downloading...`, 'success');
+
+        if (warnings.length > 0) {
+            const warningMsg = `⚠️ Capture completed with warnings (${warnings.length}): ${warnings.join('; ')}. Nodes: ${stats.nodesVisited ?? 'n/a'}`;
+            showStatus(warningMsg, 'warning');
+        } else {
+            showStatus(`✓ Capture successful. File downloading...`, 'success');
+        }
 
     } catch (error) {
         console.error('Capture error:', error);

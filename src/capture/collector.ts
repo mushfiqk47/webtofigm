@@ -1,15 +1,100 @@
 import { LayerNode, Paint, Effect, BlendMode, TextCase, TextDecoration } from '../types/layer-node';
-import { isHidden, parseColor, parseBoxShadow, parseFilterDropShadow, cleanText, imageToBase64, parseGap } from './dom-utils';
+import {
+    isHidden, parseColor, parseBoxShadow, parseFilterDropShadow, cleanText,
+    imageToBase64, parseGap, parseGradient, parseTransform, parseLineHeight,
+    parseLetterSpacing, parseTextCase, parseTextDecoration, parseBackdropFilter,
+    shouldClipContent
+} from './dom-utils';
+import { detectAndMarkComponents } from './component-detector';
+import { extractDesignTokens, DesignTokens } from './design-tokens';
+import { sanitizeSvg } from './svg-sanitize';
+
+export interface CollectionResult {
+    root: LayerNode;
+    designTokens?: DesignTokens;
+}
 
 export class ContentCollector {
     root: HTMLElement;
+    enableComponentDetection: boolean = true;
+    enableDesignTokens: boolean = true;
 
-    constructor(root: HTMLElement) {
+    // Traversal safety limits
+    private maxNodes: number;
+    private maxDepth: number;
+    private maxDurationMs: number;
+    private nodesVisited: number = 0;
+    private startedAt: number = 0;
+    private limitHit: boolean = false;
+    private limitFlags: Record<'MAX_NODES' | 'MAX_DEPTH' | 'MAX_DURATION', boolean> = {
+        MAX_NODES: false,
+        MAX_DEPTH: false,
+        MAX_DURATION: false
+    };
+    private warnings: string[] = [];
+
+    constructor(root: HTMLElement, options?: {
+        detectComponents?: boolean;
+        extractTokens?: boolean;
+        maxNodes?: number;
+        maxDepth?: number;
+        maxDurationMs?: number;
+    }) {
         this.root = root;
+        this.enableComponentDetection = options?.detectComponents ?? true;
+        this.enableDesignTokens = options?.extractTokens ?? true;
+        this.maxNodes = options?.maxNodes ?? 8000;
+        this.maxDepth = options?.maxDepth ?? 32;
+        this.maxDurationMs = options?.maxDurationMs ?? 20000;
     }
 
-    async collect(element: HTMLElement): Promise<LayerNode | null> {
+    /**
+     * Collect the entire page with components and design tokens
+     */
+    async collectPage(): Promise<CollectionResult | null> {
+        const root = await this.collect(this.root as HTMLElement, 0);
+
+        if (!root) return null;
+
+        // Run component detection if enabled
+        if (this.enableComponentDetection) {
+            detectAndMarkComponents(root);
+        }
+
+        // Extract design tokens if enabled
+        let designTokens: DesignTokens | undefined;
+        if (this.enableDesignTokens) {
+            designTokens = extractDesignTokens(root);
+        }
+
+        return { root, designTokens };
+    }
+
+    getWarnings(): string[] {
+        return [...this.warnings];
+    }
+
+    getStats(): { nodesVisited: number; limitHit: boolean } {
+        return {
+            nodesVisited: this.nodesVisited,
+            limitHit: this.limitHit
+        };
+    }
+
+    async collect(element: HTMLElement, depth: number = 0): Promise<LayerNode | null> {
         try {
+            if (!this.startedAt) {
+                this.startedAt = Date.now();
+            }
+
+            if (this.shouldStopTraversal(depth)) {
+                return null;
+            }
+
+            if (!this.reserveNode('element', element, depth)) {
+                return null;
+            }
+
             const style = window.getComputedStyle(element);
 
             if (isHidden(element, style)) {
@@ -19,15 +104,45 @@ export class ContentCollector {
             const isDisplayContents = style.display === 'contents';
             const rect = element.getBoundingClientRect();
 
-            // Base Node Construction
+            const isDocumentRoot = element === document.documentElement || element === document.body;
+
+            /**
+             * COORDINATE SYSTEM DOCUMENTATION:
+             * 
+             * We use DOCUMENT-RELATIVE coordinates throughout the capture process.
+             * This ensures consistent positioning regardless of scroll position.
+             * 
+             * getBoundingClientRect() returns VIEWPORT-RELATIVE coordinates.
+             * To convert to document-relative, we add the scroll offsets:
+             *   documentX = rect.x + scrollX
+             *   documentY = rect.y + scrollY
+             * 
+             * In Figma, coordinates are PARENT-RELATIVE.
+             * The Builder converts document-relative to parent-relative:
+             *   figmaNode.x = documentX - parentDocumentX
+             *   figmaNode.y = documentY - parentDocumentY
+             */
+            const scrollX = window.scrollX || window.pageXOffset || 0;
+            const scrollY = window.scrollY || window.pageYOffset || 0;
+
+            const width = isDocumentRoot
+                ? Math.max(rect.width, document.documentElement.scrollWidth, document.documentElement.clientWidth)
+                : rect.width;
+            const height = isDocumentRoot
+                ? Math.max(rect.height, document.documentElement.scrollHeight, document.documentElement.clientHeight)
+                : rect.height;
+
+            const opacity = parseFloat(style.opacity);
+
+            // Base Node Construction - coordinates are document-relative (not affected by scroll)
             const node: LayerNode = {
                 type: 'FRAME',
                 name: element.tagName.toLowerCase(),
-                x: rect.x,
-                y: rect.y,
-                width: rect.width,
-                height: rect.height,
-                opacity: parseFloat(style.opacity),
+                x: isDocumentRoot ? 0 : rect.x + scrollX,  // Document-relative X
+                y: isDocumentRoot ? 0 : rect.y + scrollY,  // Document-relative Y
+                width: width,
+                height: height,
+                opacity: isNaN(opacity) ? 1 : opacity,
                 blendMode: this.getBlendMode(style),
                 fills: [],
                 strokes: [],
@@ -49,20 +164,23 @@ export class ContentCollector {
                 this.extractShadows(node, style);
                 this.extractFilters(node, style);
                 this.extractRadius(node, style);
+                this.extractTransform(node, style);
+                this.extractClipping(node, style);
 
                 // 3. Layout Extraction (Flex/Grid -> AutoLayout)
-                this.extractLayout(node, style);
+                this.extractLayout(node, style, element);
 
                 // 4. Content Handling
-                if (element.tagName === 'IMG') {
+                const tagName = element.tagName.toUpperCase();
+                if (tagName === 'IMG') {
                     await this.handleImage(node, element as HTMLImageElement);
-                } else if (element.tagName === 'SVG') {
+                } else if (tagName === 'SVG' || element instanceof SVGSVGElement) {
                     this.handleSvg(node, element as unknown as SVGElement);
-                } else if (element.tagName === 'VIDEO') {
+                } else if (tagName === 'VIDEO') {
                     await this.handleVideo(node, element as HTMLVideoElement);
-                } else if (element.tagName === 'CANVAS') {
+                } else if (tagName === 'CANVAS') {
                     await this.handleCanvas(node, element as HTMLCanvasElement);
-                } else if (element.tagName === 'PICTURE') {
+                } else if (tagName === 'PICTURE') {
                     await this.handlePicture(node, element as HTMLPictureElement);
                 }
             } else if (!isVisible && !isDisplayContents) {
@@ -77,7 +195,7 @@ export class ContentCollector {
 
             // 5. Children Recursion
             if (node.type !== 'IMAGE' && node.type !== 'SVG') {
-                await this.processChildren(node, element);
+                await this.processChildren(node, element, depth + 1);
             }
 
             // 6. Pruning
@@ -114,19 +232,53 @@ export class ContentCollector {
 
     private assignSemanticType(node: LayerNode, element: HTMLElement) {
         const tag = element.tagName;
+
+        // 1. Determine semantic type from HTML tag
         if (tag === 'BUTTON' || (tag === 'A' && element.classList.contains('btn'))) node.semanticType = 'BUTTON';
         else if (tag === 'INPUT') node.semanticType = 'INPUT';
         else if (tag === 'IMG') node.semanticType = 'IMAGE';
-        else if (tag === 'SECTION' || tag === 'HEADER' || tag === 'FOOTER') node.semanticType = 'SECTION';
+        else if (tag === 'SECTION' || tag === 'HEADER' || tag === 'FOOTER' || tag === 'NAV' || tag === 'MAIN' || tag === 'ARTICLE' || tag === 'ASIDE') node.semanticType = 'SECTION';
 
-        if (node.semanticType) {
-            node.name = `${node.semanticType.toLowerCase()}`;
+        // 2. Build smart name with priority: aria-label > data-testid > role > id > class > text content
+        let smartName = node.semanticType ? node.semanticType.toLowerCase() : tag.toLowerCase();
+
+        // Check ARIA label first (most semantic)
+        const ariaLabel = element.getAttribute('aria-label');
+        if (ariaLabel) {
+            smartName = ariaLabel.slice(0, 40); // Limit length
         }
-        if (element.id) node.name += `#${element.id}`;
-        else if (element.className && typeof element.className === 'string') node.name += `.${element.className.split(' ')[0]}`;
+        // Check data-testid (common in React apps)
+        else if (element.getAttribute('data-testid')) {
+            smartName = element.getAttribute('data-testid')!.replace(/-/g, ' ');
+        }
+        // Check role attribute
+        else if (element.getAttribute('role')) {
+            const role = element.getAttribute('role');
+            if (role && role !== 'presentation' && role !== 'none') {
+                smartName = role;
+            }
+        }
+        // Check ID
+        else if (element.id) {
+            smartName += `#${element.id}`;
+        }
+        // Check first class
+        else if (element.className && typeof element.className === 'string' && element.className.trim()) {
+            const firstClass = element.className.split(' ')[0];
+            if (firstClass && !firstClass.startsWith('_') && firstClass.length < 30) {
+                smartName += `.${firstClass}`;
+            }
+        }
+        // For buttons/links, use text content
+        else if ((tag === 'BUTTON' || tag === 'A') && element.textContent) {
+            const text = element.textContent.trim().slice(0, 25);
+            if (text) smartName = text;
+        }
+
+        node.name = smartName;
     }
 
-    private extractLayout(node: LayerNode, style: CSSStyleDeclaration) {
+    private extractLayout(node: LayerNode, style: CSSStyleDeclaration, element: HTMLElement) {
         const display = style.display;
 
         // Extract Padding
@@ -142,7 +294,7 @@ export class ContentCollector {
 
         if (isFlex || isGrid) {
             node.layoutMode = (style.flexDirection === 'row' || style.flexDirection === 'row-reverse' || (isGrid && style.gridAutoFlow.includes('column'))) ? 'HORIZONTAL' : 'VERTICAL';
-            
+
             const gaps = parseGap(style.gap);
             // Fallback if shorthand failed
             if (gaps.row === 0 && style.rowGap && style.rowGap !== 'normal') gaps.row = parseFloat(style.rowGap);
@@ -161,7 +313,7 @@ export class ContentCollector {
             else if (align === 'flex-end' || align === 'end') node.counterAxisAlignItems = 'MAX';
             else if (align === 'center') node.counterAxisAlignItems = 'CENTER';
             else if (align === 'baseline') node.counterAxisAlignItems = 'BASELINE';
-            else if (align === 'stretch') node.counterAxisAlignItems = 'MIN'; // Figma doesn't really have "stretch" for auto layout, it uses "Fill Container" on children
+            else if (align === 'stretch') node.counterAxisAlignItems = 'MIN';
 
             const justify = style.justifyContent;
             if (justify === 'flex-start' || justify === 'start') node.primaryAxisAlignItems = 'MIN';
@@ -172,33 +324,54 @@ export class ContentCollector {
             if (style.flexWrap === 'wrap' || isGrid) {
                 node.layoutWrap = 'WRAP';
             }
-        } else {
-            // Standard Flow Layout -> FORCE Vertical Auto Layout
-            // The user wants "Always Auto Layout".
-            // We treat almost everything as a vertical stack of content.
-            node.layoutMode = 'VERTICAL';
-            node.primaryAxisAlignItems = 'MIN';
-            node.counterAxisAlignItems = 'MIN';
-            node.itemSpacing = parseFloat(style.rowGap) || 0;
 
-            // If it's a list item, we might want to handle marker? 
-            // For now, capturing the LI as a frame is fine.
-        }
+            // FIDELITY FIX: Intelligent sizing detection instead of always HUG
+            // Horizontal sizing
+            const hasExplicitWidth = style.width !== 'auto' && style.width !== '' && !style.width.includes('%');
+            const isFullWidth = style.width === '100%' || style.width === '100vw' || style.width === '100vi';
+            const hasMinWidth = style.minWidth !== 'none' && style.minWidth !== '0px' && style.minWidth !== '';
 
-        const isWidthFill = style.width === '100%' || style.width === '100vw' || parseFloat(style.flexGrow) > 0;
-        const isHeightFill = style.height === '100%' || style.height === '100vh';
-
-        node.layoutSizingHorizontal = isWidthFill ? 'FILL' : 'HUG';
-        node.layoutSizingVertical = isHeightFill ? 'FILL' : 'HUG';
-
-        // For non-flex/grid elements, if they are "block-like" (taking full width), force FILL.
-        // display: block, list-item, flow-root, flex (handled above), grid (handled above), table, etc.
-        // Basically if it's NOT inline or inline-block (unless width is 100%), default to FILL.
-        if (node.layoutMode === 'VERTICAL' && !isFlex && !isGrid) {
-            if (display !== 'inline' && display !== 'inline-block' && display !== 'inline-flex' && display !== 'inline-grid') {
+            if (isFullWidth) {
                 node.layoutSizingHorizontal = 'FILL';
+            } else if (hasExplicitWidth) {
+                node.layoutSizingHorizontal = 'FIXED';
+            } else {
+                node.layoutSizingHorizontal = 'HUG';
             }
+
+            // Vertical sizing
+            const hasExplicitHeight = style.height !== 'auto' && style.height !== '' && !style.height.includes('%');
+            const isFullHeight = style.height === '100%' || style.height === '100vh' || style.height === '100vb';
+            const hasMinHeight = style.minHeight !== 'none' && style.minHeight !== '0px' && style.minHeight !== '';
+
+            if (isFullHeight) {
+                node.layoutSizingVertical = 'FILL';
+            } else if (hasExplicitHeight) {
+                node.layoutSizingVertical = 'FIXED';
+            } else {
+                node.layoutSizingVertical = 'HUG';
+            }
+        } else {
+            // Non-flex/grid elements: Use absolute positioning (layoutMode = NONE)
+            node.layoutMode = 'NONE';
+
+            // Fixed sizing - elements should use their actual captured dimensions
+            node.layoutSizingHorizontal = 'FIXED';
+            node.layoutSizingVertical = 'FIXED';
         }
+
+        // Extract flex child properties (for when THIS element is inside a flex parent)
+        const flexGrow = parseFloat(style.flexGrow);
+        if (flexGrow > 0) {
+            node.layoutGrow = flexGrow;
+        }
+
+        // Align-self for child alignment override
+        const alignSelf = style.alignSelf;
+        if (alignSelf === 'flex-start' || alignSelf === 'start') node.layoutAlign = 'MIN';
+        else if (alignSelf === 'flex-end' || alignSelf === 'end') node.layoutAlign = 'MAX';
+        else if (alignSelf === 'center') node.layoutAlign = 'CENTER';
+        else if (alignSelf === 'stretch') node.layoutAlign = 'STRETCH';
 
         if (style.position === 'absolute' || style.position === 'fixed') {
             node.layoutPositioning = 'ABSOLUTE';
@@ -215,9 +388,18 @@ export class ContentCollector {
             });
         }
 
-        // Background Images (Multiple support)
+        // Background Images (Multiple support) - including gradients
         if (style.backgroundImage && style.backgroundImage !== 'none') {
-            // Use exec loop instead of matchAll for better compatibility
+            // Check for gradients FIRST
+            if (style.backgroundImage.includes('gradient')) {
+                const gradient = parseGradient(style.backgroundImage);
+                if (gradient) {
+                    node.fills?.push(gradient);
+                    node.isContentOnly = false;
+                }
+            }
+
+            // Then check for image URLs
             const regex = /url\(['"]?(.*?)['"]?\)/g;
             let match;
             const urls: string[] = [];
@@ -233,8 +415,37 @@ export class ContentCollector {
             // Reverse order.
             urls.reverse();
 
-            for (const urlStr of urls) {
+            // PERFORMANCE FIX: Load all images in parallel instead of sequentially
+            const imagePromises = urls.map(async (urlStr): Promise<Paint | null> => {
                 const url = this.normalizeUrl(urlStr);
+                try {
+                    const base64 = await imageToBase64(url);
+                    if (base64) {
+                        return {
+                            type: 'IMAGE',
+                            scaleMode: 'FILL',
+                            imageHash: '',
+                            _base64: base64
+                        };
+                    }
+                } catch (e) {
+                    console.warn('Failed to extract background image', url, e);
+                }
+                return null;
+            });
+
+            const imageFills = (await Promise.all(imagePromises)).filter((fill): fill is Paint => fill !== null);
+            if (imageFills.length > 0) {
+                node.fills?.push(...imageFills);
+                node.isContentOnly = false;
+            }
+        }
+
+        // Mask Image (common for icon fonts and sprites)
+        if (style.webkitMaskImage && style.webkitMaskImage !== 'none') {
+            const urlMatch = style.webkitMaskImage.match(/url\(['"]?(.*?)['"]?\)/);
+            if (urlMatch && urlMatch[1]) {
+                const url = this.normalizeUrl(urlMatch[1]);
                 try {
                     const base64 = await imageToBase64(url);
                     if (base64) {
@@ -247,25 +458,7 @@ export class ContentCollector {
                         node.isContentOnly = false;
                     }
                 } catch (e) {
-                    console.warn('Failed to extract background image', url, e);
-                }
-            }
-        }
-
-        // Mask Image (common for icon fonts and sprites)
-        if (style.webkitMaskImage && style.webkitMaskImage !== 'none') {
-            const urlMatch = style.webkitMaskImage.match(/url\(['"]?(.*?)['"]?\)/);
-            if (urlMatch && urlMatch[1]) {
-                const url = this.normalizeUrl(urlMatch[1]);
-                const base64 = await imageToBase64(url);
-                if (base64) {
-                    node.fills?.push({
-                        type: 'IMAGE',
-                        scaleMode: 'FILL',
-                        imageHash: '',
-                        _base64: base64
-                    });
-                    node.isContentOnly = false;
+                    console.warn('Failed to extract mask image', url, e);
                 }
             }
         }
@@ -275,15 +468,19 @@ export class ContentCollector {
             const urlMatch = style.listStyleImage.match(/url\(['"]?(.*?)['"]?\)/);
             if (urlMatch && urlMatch[1]) {
                 const url = this.normalizeUrl(urlMatch[1]);
-                const base64 = await imageToBase64(url);
-                if (base64) {
-                    node.fills?.push({
-                        type: 'IMAGE',
-                        scaleMode: 'FILL',
-                        imageHash: '',
-                        _base64: base64
-                    });
-                    node.isContentOnly = false;
+                try {
+                    const base64 = await imageToBase64(url);
+                    if (base64) {
+                        node.fills?.push({
+                            type: 'IMAGE',
+                            scaleMode: 'FILL',
+                            imageHash: '',
+                            _base64: base64
+                        });
+                        node.isContentOnly = false;
+                    }
+                } catch (e) {
+                    console.warn('Failed to extract list style image', url, e);
                 }
             }
         }
@@ -317,6 +514,26 @@ export class ContentCollector {
             node.cornerRadius = tl;
         } else {
             node.cornerRadius = { topLeft: tl, topRight: tr, bottomLeft: bl, bottomRight: br };
+        }
+    }
+
+    private extractTransform(node: LayerNode, style: CSSStyleDeclaration) {
+        const transform = parseTransform(style.transform);
+        if (transform.rotation !== 0) {
+            node.rotation = transform.rotation;
+        }
+        // Note: Figma doesn't support scale on individual nodes the same way CSS does
+        // Scale is effectively baked into width/height via getBoundingClientRect
+    }
+
+    private extractClipping(node: LayerNode, style: CSSStyleDeclaration) {
+        node.clipsContent = shouldClipContent(style);
+
+        // Extract backdrop-filter for glassmorphism effects
+        const backdropBlur = parseBackdropFilter(style.backdropFilter);
+        if (backdropBlur) {
+            if (!node.effects) node.effects = [];
+            node.effects.push(backdropBlur);
         }
     }
 
@@ -378,9 +595,14 @@ export class ContentCollector {
                 try {
                     const svgData = decodeURIComponent(url.split(',')[1] || '');
                     if (svgData.includes('<svg')) {
-                        node.type = 'SVG';
-                        node.svgContent = svgData;
-                        return;
+                        const sanitized = sanitizeSvg(svgData);
+                        if (sanitized) {
+                            node.type = 'SVG';
+                            node.svgContent = sanitized;
+                            return;
+                        } else {
+                            this.addWarning('Dropped unsafe inline SVG image');
+                        }
                     }
                 } catch (e) {
                     console.warn('Failed to decode inline SVG', e);
@@ -405,9 +627,14 @@ export class ContentCollector {
                 if (response.ok) {
                     const svgText = await response.text();
                     if (svgText.includes('<svg')) {
-                        node.type = 'SVG';
-                        node.svgContent = svgText;
-                        return;
+                        const sanitized = sanitizeSvg(svgText);
+                        if (sanitized) {
+                            node.type = 'SVG';
+                            node.svgContent = sanitized;
+                            return;
+                        } else {
+                            this.addWarning(`Dropped unsafe SVG from ${url}`);
+                        }
                     }
                 }
             } catch (e) {
@@ -450,7 +677,7 @@ export class ContentCollector {
                                 group.setAttribute(attr.name, attr.value);
                             }
                         });
-                        
+
                         group.innerHTML = target.innerHTML;
                         use.parentNode?.replaceChild(group, use);
                     }
@@ -460,7 +687,14 @@ export class ContentCollector {
             console.warn('Failed to inline SVG use tags', e);
         }
 
-        node.svgContent = svg.outerHTML;
+        const sanitized = sanitizeSvg(svg.outerHTML);
+        if (sanitized) {
+            node.svgContent = sanitized;
+        } else {
+            this.addWarning('Dropped unsafe SVG element');
+            node.type = 'FRAME';
+            node.name = 'SVG (sanitized)';
+        }
     }
 
     private async handleVideo(node: LayerNode, video: HTMLVideoElement) {
@@ -543,25 +777,39 @@ export class ContentCollector {
         }
     }
 
-    private async processChildren(node: LayerNode, element: HTMLElement) {
-        await this.collectPseudoElement(node, element, '::before');
-
+    private async processChildren(node: LayerNode, element: HTMLElement, depth: number) {
         const childNodes = Array.from(element.childNodes);
         const collectedChildren: LayerNode[] = [];
 
+        if (this.shouldStopTraversal(depth)) return;
+
+        const beforeNode = await this.collectPseudoElement(node, element, '::before', depth + 1);
+        if (beforeNode) collectedChildren.push(beforeNode);
+
         for (const child of childNodes) {
+            if (this.shouldStopTraversal(depth)) break;
             if (child.nodeType === Node.TEXT_NODE) {
-                const textNode = this.createTextLeaf(child as Text, element);
+                const textNode = this.createTextLeaf(child as Text, element, depth + 1);
                 if (textNode) collectedChildren.push(textNode);
             } else if (child.nodeType === Node.ELEMENT_NODE) {
-                const childLayer = await this.collect(child as HTMLElement);
-                if (childLayer) {
-                    collectedChildren.push(childLayer);
+                const childElement = child as Element;
+                // Handle SVG elements specially - they have a different namespace
+                if (childElement instanceof SVGSVGElement) {
+                    const svgNode = await this.collect(childElement as unknown as HTMLElement, depth + 1);
+                    if (svgNode) collectedChildren.push(svgNode);
+                } else if (childElement instanceof HTMLElement) {
+                    const childLayer = await this.collect(childElement, depth + 1);
+                    if (childLayer) {
+                        collectedChildren.push(childLayer);
+                    }
                 }
             }
         }
 
-        await this.collectPseudoElement(node, element, '::after');
+        if (this.shouldStopTraversal(depth)) return;
+
+        const afterNode = await this.collectPseudoElement(node, element, '::after', depth + 1);
+        if (afterNode) collectedChildren.push(afterNode);
 
         // Sort children by stacking order (z-index)
         this.sortChildrenByZIndex(collectedChildren);
@@ -571,22 +819,29 @@ export class ContentCollector {
     }
 
     private sortChildrenByZIndex(children: LayerNode[]) {
-        children.sort((a, b) => {
-            const az = a.zIndex || 0;
-            const bz = b.zIndex || 0;
+        const indexed = children.map((child, index) => ({ child, index }));
+
+        indexed.sort((a, b) => {
+            const az = a.child.zIndex || 0;
+            const bz = b.child.zIndex || 0;
             if (az !== bz) return az - bz;
 
             // If z-index is same, positioning matters but DOM order should be fallback
             // Figma layers bottom-to-top, so higher index last
-            return 0;
+            return a.index - b.index;
         });
+
+        children.splice(0, children.length, ...indexed.map(i => i.child));
     }
 
-    private async collectPseudoElement(parentNode: LayerNode, element: HTMLElement, pseudoType: '::before' | '::after') {
+    private async collectPseudoElement(parentNode: LayerNode, element: HTMLElement, pseudoType: '::before' | '::after', depth: number): Promise<LayerNode | null> {
+        if (this.shouldStopTraversal(depth)) return null;
+        if (!this.reserveNode('pseudo', element, depth)) return null;
+
         const style = window.getComputedStyle(element, pseudoType);
         const content = style.content;
 
-        if (!content || content === 'none' || content === 'normal') return;
+        if (!content || content === 'none' || content === 'normal') return null;
 
         const width = parseFloat(style.width);
         const height = parseFloat(style.height);
@@ -596,16 +851,21 @@ export class ContentCollector {
 
         // Capture if it has content string OR url match OR (has size AND (border or background))
         // Many generic icons have empty content but use background-image and sizing.
-        const hasBackground = style.backgroundImage !== 'none' || style.backgroundColor !== 'rgba(0, 0, 0, 0)';
+        const hasBackground = style.backgroundImage !== 'none' || (style.backgroundColor !== 'rgba(0, 0, 0, 0)' && style.backgroundColor !== 'transparent');
         const hasBorder = style.borderStyle !== 'none' && parseFloat(style.borderWidth) > 0;
 
-        if (!hasContentString && !urlMatch && !(hasSize && (hasBackground || hasBorder))) return;
+        if (!hasContentString && !urlMatch && !(hasSize && (hasBackground || hasBorder))) return null;
 
+        /**
+         * COORDINATE FIX: Pseudo-elements inherit parent's document-relative coordinates.
+         * Parent coordinates are already document-relative, so we use them directly.
+         * For positioned pseudo-elements, we calculate offset from parent.
+         */
         const pseudoNode: LayerNode = {
             type: 'FRAME',
             name: pseudoType,
-            x: 0,
-            y: 0,
+            x: parentNode.x,  // Inherit parent's document-relative X
+            y: parentNode.y,  // Inherit parent's document-relative Y
             width: width || 0,
             height: height || 0,
             opacity: parseFloat(style.opacity),
@@ -615,15 +875,32 @@ export class ContentCollector {
             effects: [],
             children: [],
             isContentOnly: false,
-            zIndex: style.zIndex !== 'auto' ? parseInt(style.zIndex) : 0
+            zIndex: style.zIndex !== 'auto' ? parseInt(style.zIndex) : (pseudoType === '::after' ? 1 : -1)
         };
 
-        if (style.position === 'absolute') {
+        // Handle positioned pseudo-elements (absolute/fixed)
+        if (style.position === 'absolute' || style.position === 'fixed') {
             pseudoNode.layoutPositioning = 'ABSOLUTE';
+
             const top = parseFloat(style.top);
             const left = parseFloat(style.left);
-            if (!isNaN(top)) pseudoNode.y = parentNode.y + top;
-            if (!isNaN(left)) pseudoNode.x = parentNode.x + left;
+            const right = parseFloat(style.right);
+            const bottom = parseFloat(style.bottom);
+
+            // Calculate document-relative position based on parent + offset
+            // Parent coordinates are already document-relative
+            if (!isNaN(top)) {
+                pseudoNode.y = parentNode.y + top;
+            }
+            if (!isNaN(left)) {
+                pseudoNode.x = parentNode.x + left;
+            }
+            if (isNaN(left) && !isNaN(right)) {
+                pseudoNode.x = parentNode.x + parentNode.width - pseudoNode.width - right;
+            }
+            if (isNaN(top) && !isNaN(bottom)) {
+                pseudoNode.y = parentNode.y + parentNode.height - pseudoNode.height - bottom;
+            }
         }
 
         await this.extractBackgrounds(pseudoNode, style);
@@ -653,7 +930,7 @@ export class ContentCollector {
         if (cleanContent && cleanContent.length > 0 && !urlMatch) {
             pseudoNode.type = 'TEXT';
             pseudoNode.text = cleanContent;
-            pseudoNode.fontFamily = style.fontFamily;
+            pseudoNode.fontFamily = style.fontFamily.split(',')[0].replace(/['"]/g, '');
             pseudoNode.fontSize = parseFloat(style.fontSize);
             pseudoNode.fontWeight = style.fontWeight;
             pseudoNode.textAlign = style.textAlign.toUpperCase() as any;
@@ -664,7 +941,7 @@ export class ContentCollector {
             this.extractTextShadows(pseudoNode, style);
         }
 
-        parentNode.children?.push(pseudoNode);
+        return pseudoNode;
     }
 
     private normalizeUrl(url: string): string {
@@ -675,7 +952,10 @@ export class ContentCollector {
         }
     }
 
-    private createTextLeaf(textNode: Text, parent: HTMLElement): LayerNode | null {
+    private createTextLeaf(textNode: Text, parent: HTMLElement, depth: number): LayerNode | null {
+        if (this.shouldStopTraversal(depth)) return null;
+        if (!this.reserveNode('text', parent, depth)) return null;
+
         const style = window.getComputedStyle(parent);
         const range = document.createRange();
         range.selectNode(textNode);
@@ -687,28 +967,85 @@ export class ContentCollector {
         if (!text) return null;
 
         const color = parseColor(style.color);
+        const fontSize = parseFloat(style.fontSize);
+
+        // Add scroll offset for document-relative coordinates
+        const scrollX = window.scrollX || window.pageXOffset || 0;
+        const scrollY = window.scrollY || window.pageYOffset || 0;
 
         const node: LayerNode = {
             type: 'TEXT',
             name: 'Text',
-            x: rect.x,
-            y: rect.y,
+            x: rect.x + scrollX,
+            y: rect.y + scrollY,
             width: rect.width,
             height: rect.height,
             text: text,
-            fontFamily: style.fontFamily,
+            fontFamily: style.fontFamily.split(',')[0].replace(/['"]/g, ''),
             fontWeight: style.fontWeight,
-            fontSize: parseFloat(style.fontSize),
-            textAlign: style.textAlign.toUpperCase() as any,
+            fontSize: fontSize,
+            textAlign: style.textAlign.toUpperCase() as 'LEFT' | 'CENTER' | 'RIGHT' | 'JUSTIFIED',
+            // Enhanced text properties
+            lineHeight: parseLineHeight(style.lineHeight, fontSize),
+            letterSpacing: parseLetterSpacing(style.letterSpacing, fontSize),
+            textDecoration: parseTextDecoration(style.textDecorationLine || style.textDecoration),
+            textCase: parseTextCase(style.textTransform),
             fills: [{
                 type: 'SOLID',
                 color: { r: color.r, g: color.g, b: color.b },
                 opacity: color.a
             }]
         };
-
         this.extractTextShadows(node, style);
         return node;
+    }
+
+    /**
+     * Traversal guard: returns true when traversal should stop for this subtree
+     */
+    private shouldStopTraversal(depth: number): boolean {
+        const timedOut = this.maxDurationMs > 0 && this.startedAt > 0 && (Date.now() - this.startedAt) > this.maxDurationMs;
+        if (timedOut) {
+            this.recordLimit('MAX_DURATION', `Capture timed out after ${this.maxDurationMs}ms`);
+            return true;
+        }
+
+        if (depth > this.maxDepth) {
+            this.recordLimit('MAX_DEPTH', `Max depth ${this.maxDepth} exceeded`);
+            return true;
+        }
+
+        if (this.nodesVisited >= this.maxNodes) {
+            this.recordLimit('MAX_NODES', `Max nodes ${this.maxNodes} reached`);
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Reserve a node slot; returns false if limits exceeded.
+     */
+    private reserveNode(kind: 'element' | 'pseudo' | 'text', element: Element, depth: number): boolean {
+        if (this.shouldStopTraversal(depth)) return false;
+        this.nodesVisited += 1;
+        if (this.nodesVisited > this.maxNodes) {
+            this.recordLimit('MAX_NODES', `Max nodes ${this.maxNodes} reached (while adding ${kind} ${element.tagName || 'node'})`);
+            return false;
+        }
+        return true;
+    }
+
+    private recordLimit(type: 'MAX_NODES' | 'MAX_DEPTH' | 'MAX_DURATION', message: string) {
+        if (!this.limitFlags[type]) {
+            this.limitFlags[type] = true;
+            this.warnings.push(message);
+        }
+        this.limitHit = true;
+    }
+
+    private addWarning(message: string) {
+        this.warnings.push(message);
     }
 
     private shouldPrune(node: LayerNode): boolean {
@@ -722,7 +1059,12 @@ export class ContentCollector {
         const hasPadding = node.padding && (node.padding.top > 0 || node.padding.right > 0 || node.padding.bottom > 0 || node.padding.left > 0);
         const isSemantic = node.semanticType && node.semanticType !== 'CONTAINER';
 
-        if (hasVisibleBg || hasBorder || hasShadow || isLayout || isSemantic || hasPadding || node.type === 'IMAGE' || node.type === 'SVG' || node.type === 'TEXT') {
+        const hasOpacity = node.opacity !== undefined && !isNaN(node.opacity) && node.opacity < 1;
+        const hasBlendMode = node.blendMode !== undefined && node.blendMode !== 'NORMAL';
+        const hasRotation = node.rotation !== undefined && !isNaN(node.rotation) && node.rotation !== 0;
+        const clipsContent = node.clipsContent === true;
+
+        if (hasVisibleBg || hasBorder || hasShadow || isLayout || isSemantic || hasPadding || hasOpacity || hasBlendMode || hasRotation || clipsContent || node.type === 'IMAGE' || node.type === 'SVG' || node.type === 'TEXT') {
             return false;
         }
 

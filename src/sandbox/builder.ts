@@ -6,6 +6,8 @@ import { FontLoader } from './font-loader';
 
 export class Builder {
 
+    constructor(private warn: (message: string) => void = () => {}) {}
+
     async build(node: LayerNode, isRootNode: boolean = true, parentAbsoluteX: number = 0, parentAbsoluteY: number = 0): Promise<SceneNode | null> {
         try {
             let figmaNode: SceneNode;
@@ -25,7 +27,7 @@ export class Builder {
                             figmaNode = figma.createNodeFromSvg(node.svgContent);
                             figmaNode.name = node.name || 'SVG';
                         } catch (e) {
-                            console.warn('Failed to create SVG, falling back to frame', e);
+                            this.warn(`Failed to create SVG (${node.name || 'SVG'}), falling back to frame: ${e instanceof Error ? e.message : String(e)}`);
                             figmaNode = figma.createFrame();
                         }
                     } else {
@@ -35,29 +37,11 @@ export class Builder {
                 case 'FRAME':
                 default:
                     figmaNode = figma.createFrame();
-                    figmaNode.name = node.name || 'Frame';
 
-                    // Smart Naming: "Container" for structural frames
-                    const isAutoLayout = node.layoutMode && node.layoutMode !== 'NONE';
-                    const hasChildren = node.children && node.children.length > 0;
-
-                    if (isAutoLayout || hasChildren) {
-                        figmaNode.name = 'Container';
-                        if (node.semanticType) {
-                            const typeName = node.semanticType.charAt(0) + node.semanticType.slice(1).toLowerCase();
-                            if (typeName !== 'Container') { // Avoid "Container (Container)"
-                                figmaNode.name = `${typeName} Container`;
-                            }
-                        } else if (node.name.includes('#')) {
-                            const id = node.name.split('#')[1].split('.')[0];
-                            figmaNode.name = `Container #${id}`;
-                        } else if (node.name.includes('.')) {
-                            const cls = node.name.split('.')[1].split(' ')[0];
-                            figmaNode.name = `Container .${cls}`;
-                        }
-                    } else {
-                        figmaNode.name = node.name || 'Frame';
-                    }
+                    // Smart Naming: Use tag name with optional class/id
+                    // Priority: semantic tag > id > class > generic
+                    let layerName = this.getReadableLayerName(node.name);
+                    figmaNode.name = layerName;
 
                     if (node.clipsContent !== undefined) {
                         (figmaNode as FrameNode).clipsContent = node.clipsContent;
@@ -80,8 +64,18 @@ export class Builder {
                 figmaNode.rotation = -node.rotation;
             }
 
-            // Resize
-            if (node.type !== 'TEXT' && node.type !== 'SVG') {
+            // Resize - SVGs need special handling because createNodeFromSvg uses viewBox dimensions
+            if (node.type === 'SVG') {
+                // SVGs are created at their native viewBox size, need to scale to actual rendered size
+                const svgNode = figmaNode as FrameNode;
+                if (svgNode.width > 0 && svgNode.height > 0 && node.width > 0 && node.height > 0) {
+                    const scaleX = node.width / svgNode.width;
+                    const scaleY = node.height / svgNode.height;
+                    svgNode.rescale(Math.min(scaleX, scaleY));
+                    // Now resize to exact dimensions
+                    this.safeResize(svgNode, node.width, node.height);
+                }
+            } else if (node.type !== 'TEXT') {
                 this.safeResize(figmaNode as FrameNode | RectangleNode, node.width, node.height);
             }
 
@@ -90,7 +84,7 @@ export class Builder {
                 try {
                     StyleMapper.apply(node, figmaNode as GeometryMixin & BlendMixin);
                 } catch (styleErr) {
-                    console.warn(`Failed to apply styles to ${node.name}`, styleErr);
+                    this.warn(`Failed to apply styles to ${node.name}: ${styleErr instanceof Error ? styleErr.message : String(styleErr)}`);
                 }
             }
 
@@ -110,7 +104,7 @@ export class Builder {
                                 }
                             }
                         } catch (layoutErr) {
-                            console.warn(`Failed to apply layout to ${node.name}`, layoutErr);
+                            this.warn(`Failed to apply layout to ${node.name}: ${layoutErr instanceof Error ? layoutErr.message : String(layoutErr)}`);
                         }
                     } else {
                         (figmaNode as FrameNode).layoutMode = 'NONE';
@@ -137,12 +131,12 @@ export class Builder {
                                 try {
                                     this.applyChildLayout(child, childFigmaNode as LayoutMixin);
                                 } catch (layoutErr) {
-                                    console.warn(`Layout mapping failed for child ${child.name}`, layoutErr);
+                                    this.warn(`Layout mapping failed for child ${child.name}: ${layoutErr instanceof Error ? layoutErr.message : String(layoutErr)}`);
                                 }
                             }
                         }
                     } catch (childErr) {
-                        console.error(`Failed to build child ${child.name || 'unknown'}`, childErr);
+                        this.warn(`Failed to build child ${child.name || 'unknown'}: ${childErr instanceof Error ? childErr.message : String(childErr)}`);
                     }
 
                     childCount++;
@@ -154,7 +148,7 @@ export class Builder {
             return figmaNode;
 
         } catch (err) {
-            console.error(`CRITICAL: Failed to build node ${node.name}`, err);
+            this.warn(`CRITICAL: Failed to build node ${node.name}: ${err instanceof Error ? err.message : String(err)}`);
             // Return a placeholder so the entire tree doesn't fail
             const errorRect = figma.createRectangle();
             errorRect.name = `Error: ${node.name}`;
@@ -274,7 +268,7 @@ export class Builder {
             const image = figma.createImage(bytes);
             return image.hash;
         } catch (e) {
-            console.error('Image creation failed', e);
+            this.warn(`Image creation failed: ${e instanceof Error ? e.message : String(e)}`);
             return null;
         }
     }
@@ -305,5 +299,69 @@ export class Builder {
         }
         // If node has fixed W/H but parent is AutoLayout, we might need to set Sizing to FIXED explicitly,
         // but Figma defaults to FIXED usually. We rely on the layoutSizingHorizontal/Vertical set in build().
+    }
+
+    /**
+     * Convert raw node names (tag#id.class) into readable Figma layer names
+     */
+    private getReadableLayerName(rawName: string): string {
+        if (!rawName) return 'Frame';
+
+        // Semantic tag mapping for better readability
+        const tagMap: Record<string, string> = {
+            'div': 'Div',
+            'section': 'Section',
+            'header': 'Header',
+            'footer': 'Footer',
+            'nav': 'Nav',
+            'main': 'Main',
+            'article': 'Article',
+            'aside': 'Aside',
+            'form': 'Form',
+            'button': 'Button',
+            'input': 'Input',
+            'a': 'Link',
+            'ul': 'List',
+            'ol': 'List',
+            'li': 'List Item',
+            'span': 'Span',
+            'p': 'Paragraph',
+            'h1': 'Heading 1',
+            'h2': 'Heading 2',
+            'h3': 'Heading 3',
+            'h4': 'Heading 4',
+            'h5': 'Heading 5',
+            'h6': 'Heading 6',
+            'img': 'Image',
+            'svg': 'Icon',
+            'body': 'Page',
+            'html': 'Document'
+        };
+
+        // Parse the raw name (format: tag#id.class or tag.class or tag#id)
+        const parts = rawName.split(/[#.]/);
+        const tag = parts[0].toLowerCase();
+
+        // Get readable tag name
+        let readableName = tagMap[tag] || this.capitalizeFirst(tag);
+
+        // Check for ID
+        const idMatch = rawName.match(/#([^.]+)/);
+        if (idMatch) {
+            readableName = `${readableName} #${idMatch[1]}`;
+        }
+        // Or check for class (if no ID)
+        else {
+            const classMatch = rawName.match(/\.([^\s#.]+)/);
+            if (classMatch) {
+                readableName = `${readableName} .${classMatch[1]}`;
+            }
+        }
+
+        return readableName;
+    }
+
+    private capitalizeFirst(str: string): string {
+        return str.charAt(0).toUpperCase() + str.slice(1);
     }
 }

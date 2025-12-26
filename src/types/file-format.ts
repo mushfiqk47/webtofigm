@@ -9,6 +9,7 @@
  */
 
 import { LayerNode, ViewportMeta, SCHEMA_VERSION, HTFIG_MAGIC } from './layer-node';
+import { computeChecksum } from '../shared/utils';
 
 /**
  * Complete .htfig document structure
@@ -28,24 +29,6 @@ export interface ValidationResult {
     valid: boolean;
     error?: string;
     errorCode?: 'INVALID_MAGIC' | 'VERSION_MISMATCH' | 'CHECKSUM_FAILED' | 'SCHEMA_ERROR' | 'PARSE_ERROR';
-}
-
-/**
- * Simple hash function for browser environments (SHA-256 alternative)
- * Uses a fast, deterministic string hash for integrity checking
- */
-function computeChecksum(data: string): string {
-    let hash = 0;
-    for (let i = 0; i < data.length; i++) {
-        const char = data.charCodeAt(i);
-        hash = ((hash << 5) - hash) + char;
-        hash = hash & hash; // Convert to 32-bit integer
-    }
-    // Convert to hex and pad for consistent length
-    const hashHex = Math.abs(hash).toString(16).padStart(8, '0');
-    // Add length-based component for extra uniqueness
-    const lengthComponent = data.length.toString(16).padStart(8, '0');
-    return `${hashHex}${lengthComponent}`;
 }
 
 /**
@@ -131,23 +114,38 @@ export function validateHtfig(doc: any, originalContent?: string): ValidationRes
     }
 
     // 3. Verify checksum if original content provided
-    if (originalContent && doc.checksum) {
+    if (!doc.checksum || typeof doc.checksum !== 'string') {
+        return {
+            valid: false,
+            error: 'Missing or invalid checksum in file.',
+            errorCode: 'CHECKSUM_FAILED'
+        };
+    }
+
+    if (doc.checksum) {
         // Reconstruct payload without checksum to verify
         const { checksum, ...payloadWithoutChecksum } = doc;
         const payloadString = JSON.stringify(payloadWithoutChecksum);
         const computedChecksum = computeChecksum(payloadString);
 
         if (computedChecksum !== checksum) {
-            // Note: In development/debug, formatting differences might break this. 
-            // Ideally we'd canoncialize JSON but for now strict check.
-            // If it fails, we might just warn or skip if developing.
-            // For production, we want strict.
-            // Let's relax for now or ensure encode uses consistent stringify.
+            return {
+                valid: false,
+                error: 'File integrity check failed (checksum mismatch). The file may be corrupted or edited.',
+                errorCode: 'CHECKSUM_FAILED'
+            };
         }
     }
 
     // 4. Validate required schema fields
-    if (!doc.viewport || typeof doc.viewport.width !== 'number' || typeof doc.viewport.height !== 'number') {
+    if (
+        !doc.viewport ||
+        typeof doc.viewport.width !== 'number' ||
+        typeof doc.viewport.height !== 'number' ||
+        typeof doc.viewport.devicePixelRatio !== 'number' ||
+        typeof doc.viewport.captureTimestamp !== 'number' ||
+        typeof doc.viewport.schemaVersion !== 'string'
+    ) {
         return {
             valid: false,
             error: 'Missing or invalid viewport metadata in file.',

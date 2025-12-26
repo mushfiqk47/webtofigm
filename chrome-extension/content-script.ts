@@ -20,19 +20,43 @@ chrome.runtime.onMessage.addListener((request: any, sender: any, sendResponse: (
 
 async function autoScroll() {
     return new Promise<void>((resolve) => {
-        let totalHeight = 0;
-        const distance = 100;
-        const timer = setInterval(() => {
-            const scrollHeight = document.body.scrollHeight;
-            window.scrollBy(0, distance);
-            totalHeight += distance;
+        const distance = 200;
+        const intervalMs = 40;
+        const maxDurationMs = 15000;
+        const maxSteps = 400;
 
-            if (totalHeight >= scrollHeight) {
+        let lastScrollHeight = 0;
+        let stableHeightTicks = 0;
+        let steps = 0;
+        const start = Date.now();
+
+        const timer = setInterval(() => {
+            const scrollHeight = Math.max(
+                document.documentElement?.scrollHeight || 0,
+                document.body?.scrollHeight || 0
+            );
+
+            window.scrollBy(0, distance);
+            steps += 1;
+
+            if (scrollHeight === lastScrollHeight) {
+                stableHeightTicks += 1;
+            } else {
+                stableHeightTicks = 0;
+                lastScrollHeight = scrollHeight;
+            }
+
+            const atBottom = (window.scrollY + window.innerHeight) >= (scrollHeight - 4);
+            const timedOut = (Date.now() - start) > maxDurationMs;
+            const tooManySteps = steps >= maxSteps;
+            const heightStable = stableHeightTicks >= 5;
+
+            if (atBottom || timedOut || tooManySteps || heightStable) {
                 clearInterval(timer);
                 window.scrollTo(0, 0);
                 setTimeout(resolve, 500); // Wait for scroll back to finish
             }
-        }, 20); // Fast scroll
+        }, intervalMs);
     });
 }
 
@@ -54,6 +78,8 @@ async function capturePage() {
 
         // Wrap in array as expected by file format
         const layers = [rootLayer];
+        const warnings = collector.getWarnings();
+        const stats = collector.getStats();
 
         // Gather viewport metadata
         const viewport = {
@@ -69,7 +95,11 @@ async function capturePage() {
         // If not, we might need to inline the encoding or ensure build process handles it.
         const fileContent = encodeHtfig(layers, viewport);
 
-        return { success: true, data: fileContent };
+        if (warnings.length > 0) {
+            console.warn('Capture completed with warnings:', warnings, stats);
+        }
+
+        return { success: true, data: fileContent, warnings, stats };
 
     } catch (e) {
         console.error('HTML-to-Figma Capture Error:', e);

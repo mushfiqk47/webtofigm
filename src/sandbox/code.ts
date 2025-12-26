@@ -12,7 +12,9 @@ figma.ui.onmessage = async (msg: UIAction) => {
         const nodes = msg.data;
         postStatus(`Building ${nodes.length} layers...`);
 
-        const builder = new Builder();
+        const builder = new Builder((warning) => {
+            figma.ui.postMessage({ type: 'warning', message: warning });
+        });
         const createdNodes: SceneNode[] = [];
 
         // Batch Processing Configuration
@@ -23,12 +25,17 @@ figma.ui.onmessage = async (msg: UIAction) => {
             const batch = nodes.slice(i, i + BATCH_SIZE);
 
             // Process Batch
-            for (const node of batch) {
-                const figmaNode = await builder.build(node);
-                if (figmaNode) {
-                    createdNodes.push(figmaNode);
-                    figma.currentPage.appendChild(figmaNode);
+            try {
+                for (const node of batch) {
+                    const figmaNode = await builder.build(node);
+                    if (figmaNode) {
+                        createdNodes.push(figmaNode);
+                        figma.currentPage.appendChild(figmaNode);
+                    }
                 }
+            } catch (e) {
+                postError(`Build failed around layer ${createdNodes.length + 1}: ${e instanceof Error ? e.message : 'Unknown error'}`);
+                return;
             }
 
             // Update Status on every batch
@@ -55,4 +62,8 @@ figma.ui.onmessage = async (msg: UIAction) => {
 
 function postStatus(message: string, isError = false) {
     figma.ui.postMessage({ type: isError ? 'error' : 'status', message });
+}
+
+function postError(message: string) {
+    figma.ui.postMessage({ type: 'error', message });
 }

@@ -10,4 +10,5 @@ export type UIAction =
     | { type: 'generate'; data: LayerNode[] }
     | { type: 'status'; message: string }
     | { type: 'complete'; message: string }
-    | { type: 'error'; message: string };
+    | { type: 'error'; message: string }
+    | { type: 'warning'; message: string };

@@ -78,6 +78,23 @@
                 </div>
             </div>
 
+            <!-- Progress Bar (Hidden by default) -->
+            <div id="progress-container" class="progress-container hidden">
+                <div class="progress-track">
+                    <div id="progress-fill" class="progress-fill" style="width: 0%"></div>
+                </div>
+                <div id="progress-text" class="progress-text">Preparing import...</div>
+            </div>
+
+            <!-- Success Message (Hidden by default) -->
+            <div id="success-box" class="success-message hidden">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                    <polyline points="22 4 12 14.01 9 11.01"></polyline>
+                </svg>
+                <span id="success-text">Import completed successfully!</span>
+            </div>
+
             <!-- Actions -->
             <button id="btn-import" class="btn btn--primary" disabled>
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -85,7 +102,7 @@
                     <polyline points="7 10 12 15 17 10"></polyline>
                     <line x1="12" y1="15" x2="12" y2="3"></line>
                 </svg>
-                Import to Figma
+                <span id="btn-import-text">Import to Figma</span>
             </button>
         </main>
 

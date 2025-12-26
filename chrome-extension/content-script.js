@@ -1,6 +1,8 @@
 "use strict";
 (() => {
   // src/capture/dom-utils.ts
+  var IMAGE_TIMEOUT_MS = 8e3;
+  var MAX_IMAGE_BYTES = 75e5;
   function isHidden(element, computedStyle) {
     if (element.tagName === "SCRIPT" || element.tagName === "STYLE" || element.tagName === "NOSCRIPT" || element.tagName === "META") {
       return true;
@@ -18,13 +20,21 @@
   function imageToBase64(src) {
     return new Promise((resolve) => {
       if (src.startsWith("data:")) {
-        resolve(src);
+        if (isWithinSizeLimit(src)) {
+          resolve(src);
+        } else {
+          resolve(null);
+        }
         return;
       }
       if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
         chrome.runtime.sendMessage({ type: "FETCH_IMAGE_BASE64", url: src }, (response) => {
           if (response && response.base64) {
-            resolve(response.base64);
+            if (isWithinSizeLimit(response.base64)) {
+              resolve(response.base64);
+            } else {
+              resolve(null);
+            }
           } else {
             attemptCanvasCapture(src, resolve);
           }
@@ -37,27 +47,51 @@
   function attemptCanvasCapture(src, resolve) {
     const img = new Image();
     img.crossOrigin = "Anonymous";
+    let settled = false;
+    const done = (val) => {
+      if (settled)
+        return;
+      settled = true;
+      resolve(val);
+    };
+    const timer = setTimeout(() => done(null), IMAGE_TIMEOUT_MS);
     img.onload = () => {
+      clearTimeout(timer);
       const canvas = document.createElement("canvas");
       canvas.width = img.naturalWidth;
       canvas.height = img.naturalHeight;
       const ctx = canvas.getContext("2d");
       if (!ctx) {
-        resolve(null);
+        done(null);
         return;
       }
       ctx.drawImage(img, 0, 0);
       try {
         const dataUrl = canvas.toDataURL("image/png");
-        resolve(dataUrl);
+        if (isWithinSizeLimit(dataUrl)) {
+          done(dataUrl);
+        } else {
+          done(null);
+        }
       } catch (e) {
-        resolve(null);
+        done(null);
       }
     };
     img.onerror = () => {
-      resolve(null);
+      clearTimeout(timer);
+      done(null);
     };
     img.src = src;
+  }
+  function isWithinSizeLimit(dataUrl) {
+    try {
+      const parts = dataUrl.split(",");
+      const base64 = parts[1] || "";
+      const estimatedBytes = Math.floor(base64.length * 0.75);
+      return estimatedBytes <= MAX_IMAGE_BYTES;
+    } catch {
+      return false;
+    }
   }
   function parseColor(color) {
     if (!color || color === "transparent") {
@@ -188,28 +222,606 @@
     const col = parts.length > 1 ? parseFloat(parts[1]) : row;
     return { row, col };
   }
+  function parseGradient(bgString) {
+    try {
+      const isLinear = bgString.includes("linear-gradient");
+      const isRadial = bgString.includes("radial-gradient");
+      if (!isLinear && !isRadial)
+        return null;
+      const match = bgString.match(/gradient\((.*)\)/);
+      if (!match)
+        return null;
+      const content = match[1];
+      const parts = content.split(/,(?![^(]*\))/).map((s) => s.trim());
+      let angleDeg = 180;
+      if (isLinear && parts.length > 0) {
+        const first = parts[0];
+        if (first.includes("deg")) {
+          angleDeg = parseFloat(first) || 180;
+          parts.shift();
+        } else if (first.includes("to ")) {
+          if (first.includes("right") && first.includes("bottom"))
+            angleDeg = 135;
+          else if (first.includes("left") && first.includes("bottom"))
+            angleDeg = 225;
+          else if (first.includes("right") && first.includes("top"))
+            angleDeg = 45;
+          else if (first.includes("left") && first.includes("top"))
+            angleDeg = 315;
+          else if (first.includes("top"))
+            angleDeg = 0;
+          else if (first.includes("right"))
+            angleDeg = 90;
+          else if (first.includes("bottom"))
+            angleDeg = 180;
+          else if (first.includes("left"))
+            angleDeg = 270;
+          parts.shift();
+        }
+      }
+      const stops = [];
+      parts.forEach((part, i) => {
+        let position = parts.length > 1 ? i / (parts.length - 1) : 0;
+        const posMatch = part.match(/([\d.]+)%/);
+        if (posMatch) {
+          position = parseFloat(posMatch[1]) / 100;
+        }
+        const colorPart = part.replace(/([\d.]+)%/, "").trim();
+        const rgba = parseColor(colorPart);
+        stops.push({
+          position: Math.max(0, Math.min(1, position)),
+          color: {
+            r: rgba.r,
+            g: rgba.g,
+            b: rgba.b,
+            a: colorPart === "transparent" ? 0 : rgba.a
+          }
+        });
+      });
+      const rad = (angleDeg - 90) * Math.PI / 180;
+      const cos = Math.cos(rad);
+      const sin = Math.sin(rad);
+      const transform = [
+        [cos, sin, 0.5 - cos * 0.5 - sin * 0.5],
+        [-sin, cos, 0.5 + sin * 0.5 - cos * 0.5]
+      ];
+      return {
+        type: isRadial ? "GRADIENT_RADIAL" : "GRADIENT_LINEAR",
+        gradientStops: stops,
+        gradientTransform: transform
+      };
+    } catch (e) {
+      console.warn("Gradient parse error:", e);
+      return null;
+    }
+  }
+  function parseTransform(transformStr) {
+    const result = { rotation: 0, scaleX: 1, scaleY: 1 };
+    if (!transformStr || transformStr === "none")
+      return result;
+    const rotateMatch = transformStr.match(/rotate\(([-\d.]+)deg\)/);
+    if (rotateMatch) {
+      result.rotation = parseFloat(rotateMatch[1]) || 0;
+    }
+    const matrixMatch = transformStr.match(/matrix\(([^)]+)\)/);
+    if (matrixMatch) {
+      const values = matrixMatch[1].split(",").map((v) => parseFloat(v.trim()));
+      if (values.length >= 4) {
+        result.rotation = Math.atan2(values[1], values[0]) * 180 / Math.PI;
+        result.scaleX = Math.sqrt(values[0] * values[0] + values[1] * values[1]);
+        result.scaleY = Math.sqrt(values[2] * values[2] + values[3] * values[3]);
+      }
+    }
+    const scaleMatch = transformStr.match(/scale\(([-\d.]+)(?:,\s*([-\d.]+))?\)/);
+    if (scaleMatch) {
+      result.scaleX = parseFloat(scaleMatch[1]) || 1;
+      result.scaleY = scaleMatch[2] ? parseFloat(scaleMatch[2]) : result.scaleX;
+    }
+    return result;
+  }
+  function parseLineHeight(lineHeight, fontSize) {
+    if (!lineHeight || lineHeight === "normal") {
+      return void 0;
+    }
+    if (lineHeight.endsWith("%")) {
+      return { value: parseFloat(lineHeight), unit: "PERCENT" };
+    }
+    if (lineHeight.endsWith("px")) {
+      return { value: parseFloat(lineHeight), unit: "PIXELS" };
+    }
+    const multiplier = parseFloat(lineHeight);
+    if (!isNaN(multiplier)) {
+      return { value: multiplier * 100, unit: "PERCENT" };
+    }
+    return void 0;
+  }
+  function parseLetterSpacing(letterSpacing, fontSize) {
+    if (!letterSpacing || letterSpacing === "normal") {
+      return void 0;
+    }
+    if (letterSpacing.endsWith("%")) {
+      return { value: parseFloat(letterSpacing), unit: "PERCENT" };
+    }
+    if (letterSpacing.endsWith("em")) {
+      return { value: parseFloat(letterSpacing) * 100, unit: "PERCENT" };
+    }
+    return { value: parseFloat(letterSpacing) || 0, unit: "PIXELS" };
+  }
+  function parseTextCase(textTransform) {
+    switch (textTransform) {
+      case "uppercase":
+        return "UPPER";
+      case "lowercase":
+        return "LOWER";
+      case "capitalize":
+        return "TITLE";
+      default:
+        return "ORIGINAL";
+    }
+  }
+  function parseTextDecoration(textDecoration) {
+    if (textDecoration.includes("underline"))
+      return "UNDERLINE";
+    if (textDecoration.includes("line-through"))
+      return "LINE_THROUGH";
+    return "NONE";
+  }
+  function parseBackdropFilter(backdropFilter) {
+    if (!backdropFilter || backdropFilter === "none")
+      return null;
+    const blurMatch = backdropFilter.match(/blur\(([\d.]+)px\)/);
+    if (blurMatch) {
+      return {
+        type: "BACKGROUND_BLUR",
+        radius: parseFloat(blurMatch[1]) || 0,
+        visible: true
+      };
+    }
+    return null;
+  }
+  function shouldClipContent(style) {
+    return style.overflow === "hidden" || style.overflowX === "hidden" || style.overflowY === "hidden";
+  }
+
+  // src/capture/component-detector.ts
+  var ComponentDetector = class {
+    /**
+     * Analyze the layer tree and identify components
+     * @param root The root layer node
+     * @returns Map of component hash to instances
+     */
+    detectComponents(root) {
+      const componentMap = /* @__PURE__ */ new Map();
+      const hashCounts = /* @__PURE__ */ new Map();
+      this.countStructures(root, hashCounts);
+      this.collectComponents(root, hashCounts, componentMap);
+      for (const [hash, nodes] of componentMap) {
+        if (nodes.length < 2) {
+          componentMap.delete(hash);
+        }
+      }
+      return componentMap;
+    }
+    /**
+     * Mark detected components in the tree
+     * Adds component metadata to repeated elements
+     */
+    markComponents(root) {
+      const components = this.detectComponents(root);
+      let componentIndex = 1;
+      for (const [hash, instances] of components) {
+        const componentName = this.generateComponentName(instances[0]);
+        for (let i = 0; i < instances.length; i++) {
+          const node = instances[i];
+          node.name = `${componentName} (${i + 1}/${instances.length})`;
+        }
+        componentIndex++;
+      }
+    }
+    /**
+     * Generate a structural hash for a node
+     * Similar structures will have the same hash
+     */
+    getStructuralHash(node) {
+      const parts = [];
+      parts.push(node.type);
+      if (node.children && node.children.length > 0) {
+        parts.push(`children:${node.children.length}`);
+        const childTypes = node.children.map((c) => c.type).join(",");
+        parts.push(`childTypes:${childTypes}`);
+      }
+      const sizeCategory = this.getSizeCategory(node.width, node.height);
+      parts.push(`size:${sizeCategory}`);
+      if (node.layoutMode) {
+        parts.push(`layout:${node.layoutMode}`);
+      }
+      if (node.semanticType) {
+        parts.push(`semantic:${node.semanticType}`);
+      }
+      return parts.join("|");
+    }
+    /**
+     * Get a size category (small, medium, large)
+     * This allows grouping similarly-sized elements
+     */
+    getSizeCategory(width, height) {
+      const area = width * height;
+      if (area < 2500)
+        return "xs";
+      if (area < 1e4)
+        return "sm";
+      if (area < 4e4)
+        return "md";
+      if (area < 16e4)
+        return "lg";
+      return "xl";
+    }
+    /**
+     * Count occurrences of each structure
+     */
+    countStructures(node, counts) {
+      const hash = this.getStructuralHash(node);
+      counts.set(hash, (counts.get(hash) || 0) + 1);
+      if (node.children) {
+        for (const child of node.children) {
+          this.countStructures(child, counts);
+        }
+      }
+    }
+    /**
+     * Collect nodes that match repeated patterns
+     */
+    collectComponents(node, counts, componentMap) {
+      const hash = this.getStructuralHash(node);
+      const count = counts.get(hash) || 0;
+      if (count >= 2 && node.children && node.children.length > 0) {
+        if (!componentMap.has(hash)) {
+          componentMap.set(hash, []);
+        }
+        componentMap.get(hash).push(node);
+      }
+      if (node.children) {
+        for (const child of node.children) {
+          this.collectComponents(child, counts, componentMap);
+        }
+      }
+    }
+    /**
+     * Generate a readable component name from the first instance
+     */
+    generateComponentName(node) {
+      if (node.semanticType) {
+        return `${node.semanticType} Component`;
+      }
+      if (node.name && !node.name.startsWith("div") && !node.name.startsWith("span")) {
+        return node.name;
+      }
+      if (node.children && node.children.length > 0) {
+        const childTypes = node.children.map((c) => c.type);
+        if (childTypes.includes("IMAGE") && childTypes.includes("TEXT")) {
+          return "Card";
+        }
+        if (childTypes.every((t) => t === "TEXT")) {
+          return "Text Group";
+        }
+        if (node.children.length === 1 && childTypes[0] === "IMAGE") {
+          return "Image Container";
+        }
+      }
+      if (node.layoutMode === "HORIZONTAL") {
+        return "Row";
+      }
+      if (node.layoutMode === "VERTICAL") {
+        return "Stack";
+      }
+      return "Component";
+    }
+  };
+  function detectAndMarkComponents(root) {
+    const detector = new ComponentDetector();
+    detector.markComponents(root);
+  }
+
+  // src/capture/design-tokens.ts
+  var DesignTokenExtractor = class {
+    constructor() {
+      this.colorMap = /* @__PURE__ */ new Map();
+      this.typographyMap = /* @__PURE__ */ new Map();
+      this.spacingMap = /* @__PURE__ */ new Map();
+    }
+    /**
+     * Extract all design tokens from the layer tree
+     */
+    extract(root) {
+      this.reset();
+      this.traverse(root);
+      return {
+        colors: this.getColorTokens(),
+        typography: this.getTypographyTokens(),
+        spacing: this.getSpacingTokens(),
+        summary: {
+          totalColors: this.colorMap.size,
+          totalFonts: this.typographyMap.size,
+          spacingScale: this.detectSpacingScale()
+        }
+      };
+    }
+    reset() {
+      this.colorMap.clear();
+      this.typographyMap.clear();
+      this.spacingMap.clear();
+    }
+    traverse(node) {
+      if (node.fills) {
+        for (const fill of node.fills) {
+          if (fill.type === "SOLID" && fill.color) {
+            this.addColor(fill.color, "fill");
+          }
+        }
+      }
+      if (node.strokes) {
+        for (const stroke of node.strokes) {
+          if (stroke.type === "SOLID" && stroke.color) {
+            this.addColor(stroke.color, "stroke");
+          }
+        }
+      }
+      if (node.type === "TEXT" && node.fontFamily && node.fontSize) {
+        this.addTypography(node);
+      }
+      if (node.padding) {
+        this.addSpacing(node.padding.top, "padding");
+        this.addSpacing(node.padding.right, "padding");
+        this.addSpacing(node.padding.bottom, "padding");
+        this.addSpacing(node.padding.left, "padding");
+      }
+      if (node.itemSpacing && node.itemSpacing > 0) {
+        this.addSpacing(node.itemSpacing, "gap");
+      }
+      if (node.children) {
+        for (const child of node.children) {
+          this.traverse(child);
+        }
+      }
+    }
+    addColor(rgb, usage) {
+      const hex = this.rgbToHex(rgb);
+      if (this.colorMap.has(hex)) {
+        this.colorMap.get(hex).count++;
+      } else {
+        this.colorMap.set(hex, {
+          name: this.generateColorName(rgb),
+          hex,
+          rgb,
+          usage,
+          count: 1
+        });
+      }
+    }
+    addTypography(node) {
+      const key = `${node.fontFamily}|${node.fontSize}|${node.fontWeight}`;
+      if (this.typographyMap.has(key)) {
+        this.typographyMap.get(key).count++;
+      } else {
+        this.typographyMap.set(key, {
+          name: this.generateTypographyName(node.fontSize),
+          fontFamily: node.fontFamily,
+          fontSize: node.fontSize,
+          fontWeight: node.fontWeight || 400,
+          lineHeight: node.lineHeight,
+          count: 1
+        });
+      }
+    }
+    addSpacing(value, usage) {
+      if (value <= 0)
+        return;
+      const rounded = Math.round(value);
+      if (this.spacingMap.has(rounded)) {
+        this.spacingMap.get(rounded).count++;
+      } else {
+        this.spacingMap.set(rounded, {
+          value: rounded,
+          count: 1,
+          usage
+        });
+      }
+    }
+    rgbToHex(rgb) {
+      const r = Math.round(rgb.r * 255);
+      const g = Math.round(rgb.g * 255);
+      const b = Math.round(rgb.b * 255);
+      return `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}`.toUpperCase();
+    }
+    generateColorName(rgb) {
+      const r = Math.round(rgb.r * 255);
+      const g = Math.round(rgb.g * 255);
+      const b = Math.round(rgb.b * 255);
+      if (r === 255 && g === 255 && b === 255)
+        return "White";
+      if (r === 0 && g === 0 && b === 0)
+        return "Black";
+      if (r > 200 && g < 100 && b < 100)
+        return "Red";
+      if (r < 100 && g > 200 && b < 100)
+        return "Green";
+      if (r < 100 && g < 100 && b > 200)
+        return "Blue";
+      if (r > 200 && g > 200 && b < 100)
+        return "Yellow";
+      if (r === g && g === b)
+        return `Gray-${Math.round(r / 25.5) * 10}`;
+      return `Color-${this.rgbToHex(rgb).slice(1, 5)}`;
+    }
+    generateTypographyName(fontSize) {
+      if (fontSize >= 48)
+        return "Display";
+      if (fontSize >= 36)
+        return "Heading 1";
+      if (fontSize >= 28)
+        return "Heading 2";
+      if (fontSize >= 22)
+        return "Heading 3";
+      if (fontSize >= 18)
+        return "Heading 4";
+      if (fontSize >= 16)
+        return "Body Large";
+      if (fontSize >= 14)
+        return "Body";
+      if (fontSize >= 12)
+        return "Caption";
+      return "Small";
+    }
+    detectSpacingScale() {
+      const values = Array.from(this.spacingMap.values()).filter((s) => s.count >= 2).map((s) => s.value).sort((a, b) => a - b);
+      const base4 = [4, 8, 12, 16, 20, 24, 32, 40, 48, 64];
+      const base8 = [8, 16, 24, 32, 40, 48, 64, 80, 96];
+      const matchesBase4 = values.filter((v) => base4.some((b) => Math.abs(v - b) <= 2)).length;
+      const matchesBase8 = values.filter((v) => base8.some((b) => Math.abs(v - b) <= 2)).length;
+      if (matchesBase8 > matchesBase4) {
+        return base8.filter((v) => values.some((val) => Math.abs(val - v) <= 4));
+      }
+      if (matchesBase4 > 0) {
+        return base4.filter((v) => values.some((val) => Math.abs(val - v) <= 4));
+      }
+      return values.slice(0, 10);
+    }
+    getColorTokens() {
+      return Array.from(this.colorMap.values()).sort((a, b) => b.count - a.count);
+    }
+    getTypographyTokens() {
+      return Array.from(this.typographyMap.values()).sort((a, b) => b.count - a.count);
+    }
+    getSpacingTokens() {
+      return Array.from(this.spacingMap.values()).filter((s) => s.count >= 2).sort((a, b) => a.value - b.value);
+    }
+  };
+  function extractDesignTokens(root) {
+    const extractor = new DesignTokenExtractor();
+    return extractor.extract(root);
+  }
+
+  // src/capture/svg-sanitize.ts
+  function sanitizeSvg(svgText) {
+    try {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(svgText, "image/svg+xml");
+      const root = doc.documentElement;
+      if (!root || root.nodeName.toLowerCase() !== "svg") {
+        return "";
+      }
+      const walker = (node) => {
+        if (node.tagName.toLowerCase() === "script") {
+          node.remove();
+          return;
+        }
+        const attrs = Array.from(node.attributes);
+        for (const attr of attrs) {
+          const name = attr.name.toLowerCase();
+          const value = attr.value || "";
+          if (name.startsWith("on")) {
+            node.removeAttribute(attr.name);
+            continue;
+          }
+          if (name === "href" || name === "xlink:href" || name === "src") {
+            if (/^\s*javascript:/i.test(value) || /^\s*data:text\/html/i.test(value)) {
+              node.removeAttribute(attr.name);
+              continue;
+            }
+          }
+        }
+        const children = Array.from(node.children);
+        for (const child of children) {
+          walker(child);
+        }
+      };
+      walker(root);
+      const serializer = new XMLSerializer();
+      return serializer.serializeToString(root);
+    } catch (e) {
+      return "";
+    }
+  }
 
   // src/capture/collector.ts
   var ContentCollector = class {
-    constructor(root) {
+    constructor(root, options) {
+      this.enableComponentDetection = true;
+      this.enableDesignTokens = true;
+      this.nodesVisited = 0;
+      this.startedAt = 0;
+      this.limitHit = false;
+      this.limitFlags = {
+        MAX_NODES: false,
+        MAX_DEPTH: false,
+        MAX_DURATION: false
+      };
+      this.warnings = [];
       this.root = root;
+      this.enableComponentDetection = options?.detectComponents ?? true;
+      this.enableDesignTokens = options?.extractTokens ?? true;
+      this.maxNodes = options?.maxNodes ?? 8e3;
+      this.maxDepth = options?.maxDepth ?? 32;
+      this.maxDurationMs = options?.maxDurationMs ?? 2e4;
     }
-    async collect(element) {
+    /**
+     * Collect the entire page with components and design tokens
+     */
+    async collectPage() {
+      const root = await this.collect(this.root, 0);
+      if (!root)
+        return null;
+      if (this.enableComponentDetection) {
+        detectAndMarkComponents(root);
+      }
+      let designTokens;
+      if (this.enableDesignTokens) {
+        designTokens = extractDesignTokens(root);
+      }
+      return { root, designTokens };
+    }
+    getWarnings() {
+      return [...this.warnings];
+    }
+    getStats() {
+      return {
+        nodesVisited: this.nodesVisited,
+        limitHit: this.limitHit
+      };
+    }
+    async collect(element, depth = 0) {
       try {
+        if (!this.startedAt) {
+          this.startedAt = Date.now();
+        }
+        if (this.shouldStopTraversal(depth)) {
+          return null;
+        }
+        if (!this.reserveNode("element", element, depth)) {
+          return null;
+        }
         const style = window.getComputedStyle(element);
         if (isHidden(element, style)) {
           return null;
         }
         const isDisplayContents = style.display === "contents";
         const rect = element.getBoundingClientRect();
+        const isDocumentRoot = element === document.documentElement || element === document.body;
+        const scrollX = window.scrollX || window.pageXOffset || 0;
+        const scrollY = window.scrollY || window.pageYOffset || 0;
+        const width = isDocumentRoot ? Math.max(rect.width, document.documentElement.scrollWidth, document.documentElement.clientWidth) : rect.width;
+        const height = isDocumentRoot ? Math.max(rect.height, document.documentElement.scrollHeight, document.documentElement.clientHeight) : rect.height;
+        const opacity = parseFloat(style.opacity);
         const node = {
           type: "FRAME",
           name: element.tagName.toLowerCase(),
-          x: rect.x,
-          y: rect.y,
-          width: rect.width,
-          height: rect.height,
-          opacity: parseFloat(style.opacity),
+          x: isDocumentRoot ? 0 : rect.x + scrollX,
+          // Document-relative X
+          y: isDocumentRoot ? 0 : rect.y + scrollY,
+          // Document-relative Y
+          width,
+          height,
+          opacity: isNaN(opacity) ? 1 : opacity,
           blendMode: this.getBlendMode(style),
           fills: [],
           strokes: [],
@@ -226,16 +838,19 @@
           this.extractShadows(node, style);
           this.extractFilters(node, style);
           this.extractRadius(node, style);
-          this.extractLayout(node, style);
-          if (element.tagName === "IMG") {
+          this.extractTransform(node, style);
+          this.extractClipping(node, style);
+          this.extractLayout(node, style, element);
+          const tagName = element.tagName.toUpperCase();
+          if (tagName === "IMG") {
             await this.handleImage(node, element);
-          } else if (element.tagName === "SVG") {
+          } else if (tagName === "SVG" || element instanceof SVGSVGElement) {
             this.handleSvg(node, element);
-          } else if (element.tagName === "VIDEO") {
+          } else if (tagName === "VIDEO") {
             await this.handleVideo(node, element);
-          } else if (element.tagName === "CANVAS") {
+          } else if (tagName === "CANVAS") {
             await this.handleCanvas(node, element);
-          } else if (element.tagName === "PICTURE") {
+          } else if (tagName === "PICTURE") {
             await this.handlePicture(node, element);
           }
         } else if (!isVisible && !isDisplayContents) {
@@ -244,7 +859,7 @@
           node.effects = [];
         }
         if (node.type !== "IMAGE" && node.type !== "SVG") {
-          await this.processChildren(node, element);
+          await this.processChildren(node, element, depth + 1);
         }
         if (this.shouldPrune(node)) {
           node.isContentOnly = true;
@@ -283,17 +898,34 @@
         node.semanticType = "INPUT";
       else if (tag === "IMG")
         node.semanticType = "IMAGE";
-      else if (tag === "SECTION" || tag === "HEADER" || tag === "FOOTER")
+      else if (tag === "SECTION" || tag === "HEADER" || tag === "FOOTER" || tag === "NAV" || tag === "MAIN" || tag === "ARTICLE" || tag === "ASIDE")
         node.semanticType = "SECTION";
-      if (node.semanticType) {
-        node.name = `${node.semanticType.toLowerCase()}`;
+      let smartName = node.semanticType ? node.semanticType.toLowerCase() : tag.toLowerCase();
+      const ariaLabel = element.getAttribute("aria-label");
+      if (ariaLabel) {
+        smartName = ariaLabel.slice(0, 40);
+      } else if (element.getAttribute("data-testid")) {
+        smartName = element.getAttribute("data-testid").replace(/-/g, " ");
+      } else if (element.getAttribute("role")) {
+        const role = element.getAttribute("role");
+        if (role && role !== "presentation" && role !== "none") {
+          smartName = role;
+        }
+      } else if (element.id) {
+        smartName += `#${element.id}`;
+      } else if (element.className && typeof element.className === "string" && element.className.trim()) {
+        const firstClass = element.className.split(" ")[0];
+        if (firstClass && !firstClass.startsWith("_") && firstClass.length < 30) {
+          smartName += `.${firstClass}`;
+        }
+      } else if ((tag === "BUTTON" || tag === "A") && element.textContent) {
+        const text = element.textContent.trim().slice(0, 25);
+        if (text)
+          smartName = text;
       }
-      if (element.id)
-        node.name += `#${element.id}`;
-      else if (element.className && typeof element.className === "string")
-        node.name += `.${element.className.split(" ")[0]}`;
+      node.name = smartName;
     }
-    extractLayout(node, style) {
+    extractLayout(node, style, element) {
       const display = style.display;
       node.padding = {
         top: parseFloat(style.paddingTop) || 0,
@@ -340,21 +972,44 @@
         if (style.flexWrap === "wrap" || isGrid) {
           node.layoutWrap = "WRAP";
         }
-      } else {
-        node.layoutMode = "VERTICAL";
-        node.primaryAxisAlignItems = "MIN";
-        node.counterAxisAlignItems = "MIN";
-        node.itemSpacing = parseFloat(style.rowGap) || 0;
-      }
-      const isWidthFill = style.width === "100%" || style.width === "100vw" || parseFloat(style.flexGrow) > 0;
-      const isHeightFill = style.height === "100%" || style.height === "100vh";
-      node.layoutSizingHorizontal = isWidthFill ? "FILL" : "HUG";
-      node.layoutSizingVertical = isHeightFill ? "FILL" : "HUG";
-      if (node.layoutMode === "VERTICAL" && !isFlex && !isGrid) {
-        if (display !== "inline" && display !== "inline-block" && display !== "inline-flex" && display !== "inline-grid") {
+        const hasExplicitWidth = style.width !== "auto" && style.width !== "" && !style.width.includes("%");
+        const isFullWidth = style.width === "100%" || style.width === "100vw" || style.width === "100vi";
+        const hasMinWidth = style.minWidth !== "none" && style.minWidth !== "0px" && style.minWidth !== "";
+        if (isFullWidth) {
           node.layoutSizingHorizontal = "FILL";
+        } else if (hasExplicitWidth) {
+          node.layoutSizingHorizontal = "FIXED";
+        } else {
+          node.layoutSizingHorizontal = "HUG";
         }
+        const hasExplicitHeight = style.height !== "auto" && style.height !== "" && !style.height.includes("%");
+        const isFullHeight = style.height === "100%" || style.height === "100vh" || style.height === "100vb";
+        const hasMinHeight = style.minHeight !== "none" && style.minHeight !== "0px" && style.minHeight !== "";
+        if (isFullHeight) {
+          node.layoutSizingVertical = "FILL";
+        } else if (hasExplicitHeight) {
+          node.layoutSizingVertical = "FIXED";
+        } else {
+          node.layoutSizingVertical = "HUG";
+        }
+      } else {
+        node.layoutMode = "NONE";
+        node.layoutSizingHorizontal = "FIXED";
+        node.layoutSizingVertical = "FIXED";
       }
+      const flexGrow = parseFloat(style.flexGrow);
+      if (flexGrow > 0) {
+        node.layoutGrow = flexGrow;
+      }
+      const alignSelf = style.alignSelf;
+      if (alignSelf === "flex-start" || alignSelf === "start")
+        node.layoutAlign = "MIN";
+      else if (alignSelf === "flex-end" || alignSelf === "end")
+        node.layoutAlign = "MAX";
+      else if (alignSelf === "center")
+        node.layoutAlign = "CENTER";
+      else if (alignSelf === "stretch")
+        node.layoutAlign = "STRETCH";
       if (style.position === "absolute" || style.position === "fixed") {
         node.layoutPositioning = "ABSOLUTE";
       }
@@ -369,6 +1024,13 @@
         });
       }
       if (style.backgroundImage && style.backgroundImage !== "none") {
+        if (style.backgroundImage.includes("gradient")) {
+          const gradient = parseGradient(style.backgroundImage);
+          if (gradient) {
+            node.fills?.push(gradient);
+            node.isContentOnly = false;
+          }
+        }
         const regex = /url\(['"]?(.*?)['"]?\)/g;
         let match;
         const urls = [];
@@ -378,8 +1040,33 @@
           }
         }
         urls.reverse();
-        for (const urlStr of urls) {
+        const imagePromises = urls.map(async (urlStr) => {
           const url = this.normalizeUrl(urlStr);
+          try {
+            const base64 = await imageToBase64(url);
+            if (base64) {
+              return {
+                type: "IMAGE",
+                scaleMode: "FILL",
+                imageHash: "",
+                _base64: base64
+              };
+            }
+          } catch (e) {
+            console.warn("Failed to extract background image", url, e);
+          }
+          return null;
+        });
+        const imageFills = (await Promise.all(imagePromises)).filter((fill) => fill !== null);
+        if (imageFills.length > 0) {
+          node.fills?.push(...imageFills);
+          node.isContentOnly = false;
+        }
+      }
+      if (style.webkitMaskImage && style.webkitMaskImage !== "none") {
+        const urlMatch = style.webkitMaskImage.match(/url\(['"]?(.*?)['"]?\)/);
+        if (urlMatch && urlMatch[1]) {
+          const url = this.normalizeUrl(urlMatch[1]);
           try {
             const base64 = await imageToBase64(url);
             if (base64) {
@@ -392,23 +1079,7 @@
               node.isContentOnly = false;
             }
           } catch (e) {
-            console.warn("Failed to extract background image", url, e);
-          }
-        }
-      }
-      if (style.webkitMaskImage && style.webkitMaskImage !== "none") {
-        const urlMatch = style.webkitMaskImage.match(/url\(['"]?(.*?)['"]?\)/);
-        if (urlMatch && urlMatch[1]) {
-          const url = this.normalizeUrl(urlMatch[1]);
-          const base64 = await imageToBase64(url);
-          if (base64) {
-            node.fills?.push({
-              type: "IMAGE",
-              scaleMode: "FILL",
-              imageHash: "",
-              _base64: base64
-            });
-            node.isContentOnly = false;
+            console.warn("Failed to extract mask image", url, e);
           }
         }
       }
@@ -416,15 +1087,19 @@
         const urlMatch = style.listStyleImage.match(/url\(['"]?(.*?)['"]?\)/);
         if (urlMatch && urlMatch[1]) {
           const url = this.normalizeUrl(urlMatch[1]);
-          const base64 = await imageToBase64(url);
-          if (base64) {
-            node.fills?.push({
-              type: "IMAGE",
-              scaleMode: "FILL",
-              imageHash: "",
-              _base64: base64
-            });
-            node.isContentOnly = false;
+          try {
+            const base64 = await imageToBase64(url);
+            if (base64) {
+              node.fills?.push({
+                type: "IMAGE",
+                scaleMode: "FILL",
+                imageHash: "",
+                _base64: base64
+              });
+              node.isContentOnly = false;
+            }
+          } catch (e) {
+            console.warn("Failed to extract list style image", url, e);
           }
         }
       }
@@ -454,6 +1129,21 @@
         node.cornerRadius = tl;
       } else {
         node.cornerRadius = { topLeft: tl, topRight: tr, bottomLeft: bl, bottomRight: br };
+      }
+    }
+    extractTransform(node, style) {
+      const transform = parseTransform(style.transform);
+      if (transform.rotation !== 0) {
+        node.rotation = transform.rotation;
+      }
+    }
+    extractClipping(node, style) {
+      node.clipsContent = shouldClipContent(style);
+      const backdropBlur = parseBackdropFilter(style.backdropFilter);
+      if (backdropBlur) {
+        if (!node.effects)
+          node.effects = [];
+        node.effects.push(backdropBlur);
       }
     }
     getBlendMode(style) {
@@ -511,9 +1201,14 @@
           try {
             const svgData = decodeURIComponent(url.split(",")[1] || "");
             if (svgData.includes("<svg")) {
-              node.type = "SVG";
-              node.svgContent = svgData;
-              return;
+              const sanitized = sanitizeSvg(svgData);
+              if (sanitized) {
+                node.type = "SVG";
+                node.svgContent = sanitized;
+                return;
+              } else {
+                this.addWarning("Dropped unsafe inline SVG image");
+              }
             }
           } catch (e) {
             console.warn("Failed to decode inline SVG", e);
@@ -535,9 +1230,14 @@
           if (response.ok) {
             const svgText = await response.text();
             if (svgText.includes("<svg")) {
-              node.type = "SVG";
-              node.svgContent = svgText;
-              return;
+              const sanitized = sanitizeSvg(svgText);
+              if (sanitized) {
+                node.type = "SVG";
+                node.svgContent = sanitized;
+                return;
+              } else {
+                this.addWarning(`Dropped unsafe SVG from ${url}`);
+              }
             }
           }
         } catch (e) {
@@ -579,7 +1279,14 @@
       } catch (e) {
         console.warn("Failed to inline SVG use tags", e);
       }
-      node.svgContent = svg.outerHTML;
+      const sanitized = sanitizeSvg(svg.outerHTML);
+      if (sanitized) {
+        node.svgContent = sanitized;
+      } else {
+        this.addWarning("Dropped unsafe SVG element");
+        node.type = "FRAME";
+        node.name = "SVG (sanitized)";
+      }
     }
     async handleVideo(node, video) {
       let posterUrl = video.poster;
@@ -653,56 +1360,81 @@
         node.name = "Picture";
       }
     }
-    async processChildren(node, element) {
-      await this.collectPseudoElement(node, element, "::before");
+    async processChildren(node, element, depth) {
       const childNodes = Array.from(element.childNodes);
       const collectedChildren = [];
+      if (this.shouldStopTraversal(depth))
+        return;
+      const beforeNode = await this.collectPseudoElement(node, element, "::before", depth + 1);
+      if (beforeNode)
+        collectedChildren.push(beforeNode);
       for (const child of childNodes) {
+        if (this.shouldStopTraversal(depth))
+          break;
         if (child.nodeType === Node.TEXT_NODE) {
-          const textNode = this.createTextLeaf(child, element);
+          const textNode = this.createTextLeaf(child, element, depth + 1);
           if (textNode)
             collectedChildren.push(textNode);
         } else if (child.nodeType === Node.ELEMENT_NODE) {
-          const childLayer = await this.collect(child);
-          if (childLayer) {
-            collectedChildren.push(childLayer);
+          const childElement = child;
+          if (childElement instanceof SVGSVGElement) {
+            const svgNode = await this.collect(childElement, depth + 1);
+            if (svgNode)
+              collectedChildren.push(svgNode);
+          } else if (childElement instanceof HTMLElement) {
+            const childLayer = await this.collect(childElement, depth + 1);
+            if (childLayer) {
+              collectedChildren.push(childLayer);
+            }
           }
         }
       }
-      await this.collectPseudoElement(node, element, "::after");
+      if (this.shouldStopTraversal(depth))
+        return;
+      const afterNode = await this.collectPseudoElement(node, element, "::after", depth + 1);
+      if (afterNode)
+        collectedChildren.push(afterNode);
       this.sortChildrenByZIndex(collectedChildren);
       if (!node.children)
         node.children = [];
       node.children.push(...collectedChildren);
     }
     sortChildrenByZIndex(children) {
-      children.sort((a, b) => {
-        const az = a.zIndex || 0;
-        const bz = b.zIndex || 0;
+      const indexed = children.map((child, index) => ({ child, index }));
+      indexed.sort((a, b) => {
+        const az = a.child.zIndex || 0;
+        const bz = b.child.zIndex || 0;
         if (az !== bz)
           return az - bz;
-        return 0;
+        return a.index - b.index;
       });
+      children.splice(0, children.length, ...indexed.map((i) => i.child));
     }
-    async collectPseudoElement(parentNode, element, pseudoType) {
+    async collectPseudoElement(parentNode, element, pseudoType, depth) {
+      if (this.shouldStopTraversal(depth))
+        return null;
+      if (!this.reserveNode("pseudo", element, depth))
+        return null;
       const style = window.getComputedStyle(element, pseudoType);
       const content = style.content;
       if (!content || content === "none" || content === "normal")
-        return;
+        return null;
       const width = parseFloat(style.width);
       const height = parseFloat(style.height);
       const hasSize = width > 0 && height > 0;
       const hasContentString = content.replace(/['"]/g, "").length > 0;
       const urlMatch = content.match(/url\(['"]?(.*?)['"]?\)/);
-      const hasBackground = style.backgroundImage !== "none" || style.backgroundColor !== "rgba(0, 0, 0, 0)";
+      const hasBackground = style.backgroundImage !== "none" || style.backgroundColor !== "rgba(0, 0, 0, 0)" && style.backgroundColor !== "transparent";
       const hasBorder = style.borderStyle !== "none" && parseFloat(style.borderWidth) > 0;
       if (!hasContentString && !urlMatch && !(hasSize && (hasBackground || hasBorder)))
-        return;
+        return null;
       const pseudoNode = {
         type: "FRAME",
         name: pseudoType,
-        x: 0,
-        y: 0,
+        x: parentNode.x,
+        // Inherit parent's document-relative X
+        y: parentNode.y,
+        // Inherit parent's document-relative Y
         width: width || 0,
         height: height || 0,
         opacity: parseFloat(style.opacity),
@@ -712,16 +1444,26 @@
         effects: [],
         children: [],
         isContentOnly: false,
-        zIndex: style.zIndex !== "auto" ? parseInt(style.zIndex) : 0
+        zIndex: style.zIndex !== "auto" ? parseInt(style.zIndex) : pseudoType === "::after" ? 1 : -1
       };
-      if (style.position === "absolute") {
+      if (style.position === "absolute" || style.position === "fixed") {
         pseudoNode.layoutPositioning = "ABSOLUTE";
         const top = parseFloat(style.top);
         const left = parseFloat(style.left);
-        if (!isNaN(top))
+        const right = parseFloat(style.right);
+        const bottom = parseFloat(style.bottom);
+        if (!isNaN(top)) {
           pseudoNode.y = parentNode.y + top;
-        if (!isNaN(left))
+        }
+        if (!isNaN(left)) {
           pseudoNode.x = parentNode.x + left;
+        }
+        if (isNaN(left) && !isNaN(right)) {
+          pseudoNode.x = parentNode.x + parentNode.width - pseudoNode.width - right;
+        }
+        if (isNaN(top) && !isNaN(bottom)) {
+          pseudoNode.y = parentNode.y + parentNode.height - pseudoNode.height - bottom;
+        }
       }
       await this.extractBackgrounds(pseudoNode, style);
       if (urlMatch && urlMatch[1]) {
@@ -749,7 +1491,7 @@
       if (cleanContent && cleanContent.length > 0 && !urlMatch) {
         pseudoNode.type = "TEXT";
         pseudoNode.text = cleanContent;
-        pseudoNode.fontFamily = style.fontFamily;
+        pseudoNode.fontFamily = style.fontFamily.split(",")[0].replace(/['"]/g, "");
         pseudoNode.fontSize = parseFloat(style.fontSize);
         pseudoNode.fontWeight = style.fontWeight;
         pseudoNode.textAlign = style.textAlign.toUpperCase();
@@ -759,7 +1501,7 @@
         pseudoNode.fills.push({ type: "SOLID", color: { r: color.r, g: color.g, b: color.b }, opacity: color.a });
         this.extractTextShadows(pseudoNode, style);
       }
-      parentNode.children?.push(pseudoNode);
+      return pseudoNode;
     }
     normalizeUrl(url) {
       try {
@@ -768,7 +1510,11 @@
         return url;
       }
     }
-    createTextLeaf(textNode, parent) {
+    createTextLeaf(textNode, parent, depth) {
+      if (this.shouldStopTraversal(depth))
+        return null;
+      if (!this.reserveNode("text", parent, depth))
+        return null;
       const style = window.getComputedStyle(parent);
       const range = document.createRange();
       range.selectNode(textNode);
@@ -779,18 +1525,26 @@
       if (!text)
         return null;
       const color = parseColor(style.color);
+      const fontSize = parseFloat(style.fontSize);
+      const scrollX = window.scrollX || window.pageXOffset || 0;
+      const scrollY = window.scrollY || window.pageYOffset || 0;
       const node = {
         type: "TEXT",
         name: "Text",
-        x: rect.x,
-        y: rect.y,
+        x: rect.x + scrollX,
+        y: rect.y + scrollY,
         width: rect.width,
         height: rect.height,
         text,
-        fontFamily: style.fontFamily,
+        fontFamily: style.fontFamily.split(",")[0].replace(/['"]/g, ""),
         fontWeight: style.fontWeight,
-        fontSize: parseFloat(style.fontSize),
+        fontSize,
         textAlign: style.textAlign.toUpperCase(),
+        // Enhanced text properties
+        lineHeight: parseLineHeight(style.lineHeight, fontSize),
+        letterSpacing: parseLetterSpacing(style.letterSpacing, fontSize),
+        textDecoration: parseTextDecoration(style.textDecorationLine || style.textDecoration),
+        textCase: parseTextCase(style.textTransform),
         fills: [{
           type: "SOLID",
           color: { r: color.r, g: color.g, b: color.b },
@@ -799,6 +1553,48 @@
       };
       this.extractTextShadows(node, style);
       return node;
+    }
+    /**
+     * Traversal guard: returns true when traversal should stop for this subtree
+     */
+    shouldStopTraversal(depth) {
+      const timedOut = this.maxDurationMs > 0 && this.startedAt > 0 && Date.now() - this.startedAt > this.maxDurationMs;
+      if (timedOut) {
+        this.recordLimit("MAX_DURATION", `Capture timed out after ${this.maxDurationMs}ms`);
+        return true;
+      }
+      if (depth > this.maxDepth) {
+        this.recordLimit("MAX_DEPTH", `Max depth ${this.maxDepth} exceeded`);
+        return true;
+      }
+      if (this.nodesVisited >= this.maxNodes) {
+        this.recordLimit("MAX_NODES", `Max nodes ${this.maxNodes} reached`);
+        return true;
+      }
+      return false;
+    }
+    /**
+     * Reserve a node slot; returns false if limits exceeded.
+     */
+    reserveNode(kind, element, depth) {
+      if (this.shouldStopTraversal(depth))
+        return false;
+      this.nodesVisited += 1;
+      if (this.nodesVisited > this.maxNodes) {
+        this.recordLimit("MAX_NODES", `Max nodes ${this.maxNodes} reached (while adding ${kind} ${element.tagName || "node"})`);
+        return false;
+      }
+      return true;
+    }
+    recordLimit(type, message) {
+      if (!this.limitFlags[type]) {
+        this.limitFlags[type] = true;
+        this.warnings.push(message);
+      }
+      this.limitHit = true;
+    }
+    addWarning(message) {
+      this.warnings.push(message);
     }
     shouldPrune(node) {
       if (node.isContentOnly)
@@ -809,7 +1605,11 @@
       const isLayout = node.layoutMode !== "NONE";
       const hasPadding = node.padding && (node.padding.top > 0 || node.padding.right > 0 || node.padding.bottom > 0 || node.padding.left > 0);
       const isSemantic = node.semanticType && node.semanticType !== "CONTAINER";
-      if (hasVisibleBg || hasBorder || hasShadow || isLayout || isSemantic || hasPadding || node.type === "IMAGE" || node.type === "SVG" || node.type === "TEXT") {
+      const hasOpacity = node.opacity !== void 0 && !isNaN(node.opacity) && node.opacity < 1;
+      const hasBlendMode = node.blendMode !== void 0 && node.blendMode !== "NORMAL";
+      const hasRotation = node.rotation !== void 0 && !isNaN(node.rotation) && node.rotation !== 0;
+      const clipsContent = node.clipsContent === true;
+      if (hasVisibleBg || hasBorder || hasShadow || isLayout || isSemantic || hasPadding || hasOpacity || hasBlendMode || hasRotation || clipsContent || node.type === "IMAGE" || node.type === "SVG" || node.type === "TEXT") {
         return false;
       }
       return true;
@@ -820,7 +1620,7 @@
   var SCHEMA_VERSION = "1.0.0";
   var HTFIG_MAGIC = "HTFIG";
 
-  // src/types/file-format.ts
+  // src/shared/utils.ts
   function computeChecksum(data) {
     let hash = 0;
     for (let i = 0; i < data.length; i++) {
@@ -832,6 +1632,8 @@
     const lengthComponent = data.length.toString(16).padStart(8, "0");
     return `${hashHex}${lengthComponent}`;
   }
+
+  // src/types/file-format.ts
   function encodeHtfig(layers, viewport) {
     const viewportMeta = {
       ...viewport,
@@ -868,18 +1670,37 @@
   });
   async function autoScroll() {
     return new Promise((resolve) => {
-      let totalHeight = 0;
-      const distance = 100;
+      const distance = 200;
+      const intervalMs = 40;
+      const maxDurationMs = 15e3;
+      const maxSteps = 400;
+      let lastScrollHeight = 0;
+      let stableHeightTicks = 0;
+      let steps = 0;
+      const start = Date.now();
       const timer = setInterval(() => {
-        const scrollHeight = document.body.scrollHeight;
+        const scrollHeight = Math.max(
+          document.documentElement?.scrollHeight || 0,
+          document.body?.scrollHeight || 0
+        );
         window.scrollBy(0, distance);
-        totalHeight += distance;
-        if (totalHeight >= scrollHeight) {
+        steps += 1;
+        if (scrollHeight === lastScrollHeight) {
+          stableHeightTicks += 1;
+        } else {
+          stableHeightTicks = 0;
+          lastScrollHeight = scrollHeight;
+        }
+        const atBottom = window.scrollY + window.innerHeight >= scrollHeight - 4;
+        const timedOut = Date.now() - start > maxDurationMs;
+        const tooManySteps = steps >= maxSteps;
+        const heightStable = stableHeightTicks >= 5;
+        if (atBottom || timedOut || tooManySteps || heightStable) {
           clearInterval(timer);
           window.scrollTo(0, 0);
           setTimeout(resolve, 500);
         }
-      }, 20);
+      }, intervalMs);
     });
   }
   async function capturePage() {
@@ -892,6 +1713,8 @@
         throw new Error("No content captured from page");
       }
       const layers = [rootLayer];
+      const warnings = collector.getWarnings();
+      const stats = collector.getStats();
       const viewport = {
         width: window.innerWidth,
         height: window.innerHeight,
@@ -899,7 +1722,10 @@
         sourceUrl: window.location.href
       };
       const fileContent = encodeHtfig(layers, viewport);
-      return { success: true, data: fileContent };
+      if (warnings.length > 0) {
+        console.warn("Capture completed with warnings:", warnings, stats);
+      }
+      return { success: true, data: fileContent, warnings, stats };
     } catch (e) {
       console.error("HTML-to-Figma Capture Error:", e);
       return { success: false, error: e instanceof Error ? e.message : "Unknown error" };
