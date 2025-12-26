@@ -8,12 +8,15 @@ export class TypographyMapper {
 
         if (isNaN(w)) return 'Regular'; // Default
 
+        // Standard mapping
+        if (w <= 100) return 'Thin';
+        if (w <= 200) return 'ExtraLight';
         if (w <= 300) return 'Light';
-        if (w === 400) return 'Regular';
-        if (w === 500) return 'Medium';
-        if (w === 600) return 'SemiBold';
-        if (w >= 700) return 'Bold';
-
-        return 'Regular';
+        if (w <= 400) return 'Regular';
+        if (w <= 500) return 'Medium';
+        if (w <= 600) return 'SemiBold';
+        if (w <= 700) return 'Bold';
+        if (w <= 800) return 'ExtraBold';
+        return 'Black';
     }
 }

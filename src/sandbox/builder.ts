@@ -181,15 +181,27 @@ export class Builder {
             textNode.fontName = { family, style };
         } catch (e) {
             // FIDELITY FIX: improved fallback logic
-            console.warn(`Font ${family} not found, using Inter`);
+            console.warn(`Font ${family} ${style} not found, trying fallbacks...`);
             try {
-                // Try a safer system font before defaulting to Inter
-                await figma.loadFontAsync({ family: 'Roboto', style: 'Regular' });
-                textNode.fontName = { family: 'Roboto', style: 'Regular' };
+                // Try Roboto with the SAME style (weight) first
+                // This preserves the visual hierarchy (Bold remains Bold) even if font changes
+                await figma.loadFontAsync({ family: 'Roboto', style: style });
+                textNode.fontName = { family: 'Roboto', style: style };
             } catch (e2) {
-                // Final fallback
-                await figma.loadFontAsync({ family: 'Inter', style: 'Regular' });
-                textNode.fontName = { family: 'Inter', style: 'Regular' };
+                try {
+                    // Try Roboto Regular if specific style failed
+                    await figma.loadFontAsync({ family: 'Roboto', style: 'Regular' });
+                    textNode.fontName = { family: 'Roboto', style: 'Regular' };
+                } catch (e3) {
+                    // Final fallback to Inter
+                    try {
+                         await figma.loadFontAsync({ family: 'Inter', style: 'Regular' });
+                         textNode.fontName = { family: 'Inter', style: 'Regular' };
+                    } catch (e4) {
+                        // Very last resort, should basically never happen in Figma
+                        console.error('Failed to load any fallback fonts');
+                    }
+                }
             }
         }
 
