@@ -23,6 +23,41 @@
         </header>
 
         <section class="card">
+            <!-- Settings Panel -->
+            <details class="settings-panel">
+                <summary class="settings-toggle">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="3"></circle>
+                        <path d="M12 1v6m0 6v6m5.2-13.2l-4.2 4.2m-6 6l-4.2 4.2m13.2-5.2l-4.2-4.2m-6-6l-4.2-4.2"></path>
+                    </svg>
+                    Advanced Settings
+                </summary>
+                <div class="settings-content">
+                    <div class="setting-group">
+                        <label for="maxNodes">
+                            Max Nodes
+                            <span class="setting-hint">0 for unlimited</span>
+                        </label>
+                        <input type="number" id="maxNodes" value="15000" min="0" max="1000000" step="1000">
+                    </div>
+                    <div class="setting-group">
+                        <label for="maxDepth">
+                            Max Depth
+                            <span class="setting-hint">0 for unlimited</span>
+                        </label>
+                        <input type="number" id="maxDepth" value="50" min="0" max="1000" step="1">
+                    </div>
+                    <div class="setting-group">
+                        <label for="maxDuration">
+                            Timeout (seconds)
+                            <span class="setting-hint">0 for unlimited</span>
+                        </label>
+                        <input type="number" id="maxDuration" value="60" min="0" max="3600" step="5">
+                    </div>
+                    <button id="resetSettings" class="reset-btn">Reset to Defaults</button>
+                </div>
+            </details>
+
             <button id="captureBtn" class="capture-btn">
                 <span class="btn-icon">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">

@@ -1,6 +1,6 @@
 import { LayerNode, Paint, Effect, BlendMode } from '../types/layer-node';
 
-const IMAGE_TIMEOUT_MS = 8000;
+const IMAGE_TIMEOUT_MS = 80000;
 const MAX_IMAGE_BYTES = 7_500_000; // ~7.5MB guard to avoid huge blobs/base64
 
 /**
@@ -154,16 +154,36 @@ export function parseColor(color: string): { r: number; g: number; b: number; a:
 
     if (color.startsWith('#')) {
         const hex = color.substring(1);
+
+        // Hex 3: #RGB
         if (hex.length === 3) {
             const r = parseInt(hex[0] + hex[0], 16) / 255;
             const g = parseInt(hex[1] + hex[1], 16) / 255;
             const b = parseInt(hex[2] + hex[2], 16) / 255;
             return { r, g, b, a: 1 };
-        } else if (hex.length === 6) {
+        }
+        // Hex 6: #RRGGBB
+        else if (hex.length === 6) {
             const r = parseInt(hex.substring(0, 2), 16) / 255;
             const g = parseInt(hex.substring(2, 4), 16) / 255;
             const b = parseInt(hex.substring(4, 6), 16) / 255;
             return { r, g, b, a: 1 };
+        }
+        // Hex 4: #RGBA (Hex Alpha)
+        else if (hex.length === 4) {
+            const r = parseInt(hex[0] + hex[0], 16) / 255;
+            const g = parseInt(hex[1] + hex[1], 16) / 255;
+            const b = parseInt(hex[2] + hex[2], 16) / 255;
+            const a = parseInt(hex[3] + hex[3], 16) / 255;
+            return { r, g, b, a };
+        }
+        // Hex 8: #RRGGBBAA (Hex Alpha)
+        else if (hex.length === 8) {
+            const r = parseInt(hex.substring(0, 2), 16) / 255;
+            const g = parseInt(hex.substring(2, 4), 16) / 255;
+            const b = parseInt(hex.substring(4, 6), 16) / 255;
+            const a = parseInt(hex.substring(6, 8), 16) / 255;
+            return { r, g, b, a };
         }
     }
 

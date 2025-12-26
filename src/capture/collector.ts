@@ -43,9 +43,16 @@ export class ContentCollector {
         this.root = root;
         this.enableComponentDetection = options?.detectComponents ?? true;
         this.enableDesignTokens = options?.extractTokens ?? true;
-        this.maxNodes = options?.maxNodes ?? 8000;
-        this.maxDepth = options?.maxDepth ?? 32;
-        this.maxDurationMs = options?.maxDurationMs ?? 20000;
+
+        // Use MAX_SAFE_INTEGER if 0 is passed for unlimited
+        this.maxNodes = (!options?.maxNodes || options.maxNodes === 0) ? Number.MAX_SAFE_INTEGER : options.maxNodes;
+        this.maxDepth = (!options?.maxDepth || options.maxDepth === 0) ? Number.MAX_SAFE_INTEGER : options.maxDepth;
+        this.maxDurationMs = (!options?.maxDurationMs || options.maxDurationMs === 0) ? Number.MAX_SAFE_INTEGER : options.maxDurationMs;
+
+        // If not specified, default to generous but safe limits if not 0
+        if (options?.maxNodes === undefined) this.maxNodes = 15000;
+        if (options?.maxDepth === undefined) this.maxDepth = 50;
+        if (options?.maxDurationMs === undefined) this.maxDurationMs = 30000;
     }
 
     /**
@@ -293,7 +300,21 @@ export class ContentCollector {
         const isGrid = display === 'grid' || display === 'inline-grid';
 
         if (isFlex || isGrid) {
-            node.layoutMode = (style.flexDirection === 'row' || style.flexDirection === 'row-reverse' || (isGrid && style.gridAutoFlow.includes('column'))) ? 'HORIZONTAL' : 'VERTICAL';
+            // Logic correction:
+            // Flex Row -> HORIZONTAL
+            // Grid Row (default) -> HORIZONTAL (L->R then wrap)
+            // Flex Column -> VERTICAL
+            // Grid Column -> VERTICAL (T->B then wrap)
+
+            let isHorizontal = false;
+            if (isFlex) {
+                isHorizontal = style.flexDirection === 'row' || style.flexDirection === 'row-reverse';
+            } else if (isGrid) {
+                // Grid default is row (horizontal flow), only column is vertical flow
+                isHorizontal = !style.gridAutoFlow.includes('column');
+            }
+
+            node.layoutMode = isHorizontal ? 'HORIZONTAL' : 'VERTICAL';
 
             const gaps = parseGap(style.gap);
             // Fallback if shorthand failed
@@ -667,17 +688,12 @@ export class ContentCollector {
                     // Search in the entire document for the symbol
                     const target = document.getElementById(targetId);
                     if (target) {
-                        // Clone content
-                        // Note: This is a simplistic inlining. 
-                        // A more robust way would be to replace <use> with a <g> containing the clone.
                         const group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-                        // Copy attributes (transform, etc)
                         Array.from(use.attributes).forEach(attr => {
                             if (attr.name !== 'href' && attr.name !== 'xlink:href') {
                                 group.setAttribute(attr.name, attr.value);
                             }
                         });
-
                         group.innerHTML = target.innerHTML;
                         use.parentNode?.replaceChild(group, use);
                     }
@@ -687,7 +703,19 @@ export class ContentCollector {
             console.warn('Failed to inline SVG use tags', e);
         }
 
-        const sanitized = sanitizeSvg(svg.outerHTML);
+        let svgHtml = svg.outerHTML;
+
+        // FIDELITY FIX: Resolve 'currentColor' to actual color
+        // Many icons use fill="currentColor" to inherit text color.
+        // Figma doesn't support this dynamic binding on import, so we bake it in.
+        if (svgHtml.includes('currentColor')) {
+            const style = window.getComputedStyle(svg);
+            const color = style.color || 'black';
+            // Replace all instances of currentColor with the computed rgb/rgba string
+            svgHtml = svgHtml.replace(/currentColor/g, color);
+        }
+
+        const sanitized = sanitizeSvg(svgHtml);
         if (sanitized) {
             node.svgContent = sanitized;
         } else {
@@ -736,12 +764,16 @@ export class ContentCollector {
         } else {
             node.type = 'FRAME';
             node.name = 'Video Player';
-            // Visual placeholder
-            node.fills?.push({
-                type: 'SOLID',
-                color: { r: 0.2, g: 0.2, b: 0.2 },
-                opacity: 1
-            });
+
+            // Only add visual placeholder if we don't have other fills (like background image)
+            if (!node.fills || node.fills.length === 0) {
+                if (!node.fills) node.fills = [];
+                node.fills.push({
+                    type: 'SOLID',
+                    color: { r: 0.2, g: 0.2, b: 0.2 },
+                    opacity: 1
+                });
+            }
         }
     }
 

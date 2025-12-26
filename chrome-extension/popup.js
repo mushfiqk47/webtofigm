@@ -12,8 +12,64 @@ const progressFill = document.getElementById('progressFill');
 const progressText = document.getElementById('progressText');
 const status = document.getElementById('status');
 
+// Settings elements
+const maxNodesInput = document.getElementById('maxNodes');
+const maxDepthInput = document.getElementById('maxDepth');
+const maxDurationInput = document.getElementById('maxDuration');
+const resetSettingsBtn = document.getElementById('resetSettings');
+
 // State
 let isCapturing = false;
+
+// Default settings
+const DEFAULT_SETTINGS = {
+    maxNodes: 15000,
+    maxDepth: 50,
+    maxDuration: 60
+};
+
+/**
+ * Load settings from chrome.storage
+ */
+async function loadSettings() {
+    try {
+        const result = await chrome.storage.local.get('captureSettings');
+        const settings = result.captureSettings || DEFAULT_SETTINGS;
+
+        maxNodesInput.value = settings.maxNodes;
+        maxDepthInput.value = settings.maxDepth;
+        maxDurationInput.value = settings.maxDuration;
+    } catch (error) {
+        console.error('Failed to load settings:', error);
+    }
+}
+
+/**
+ * Save settings to chrome.storage
+ */
+async function saveSettings() {
+    const settings = {
+        maxNodes: parseInt(maxNodesInput.value),
+        maxDepth: parseInt(maxDepthInput.value),
+        maxDuration: parseInt(maxDurationInput.value)
+    };
+
+    try {
+        await chrome.storage.local.set({ captureSettings: settings });
+    } catch (error) {
+        console.error('Failed to save settings:', error);
+    }
+}
+
+/**
+ * Reset settings to defaults
+ */
+function resetSettings() {
+    maxNodesInput.value = DEFAULT_SETTINGS.maxNodes;
+    maxDepthInput.value = DEFAULT_SETTINGS.maxDepth;
+    maxDurationInput.value = DEFAULT_SETTINGS.maxDuration;
+    saveSettings();
+}
 
 /**
  * Update UI to show capturing state
@@ -144,11 +200,20 @@ async function capturePage() {
 
         updateProgress(40, 'Capturing DOM structure...');
 
-        // Send capture message
-        // protocol: { type: 'CAPTURE_PAGE' }
+        // Get current settings
+        const settings = {
+            maxNodes: parseInt(maxNodesInput.value),
+            maxDepth: parseInt(maxDepthInput.value),
+            maxDurationMs: parseInt(maxDurationInput.value) * 1000
+        };
+
+        // Send capture message with settings
         let response;
         try {
-            response = await chrome.tabs.sendMessage(tab.id, { type: 'CAPTURE_PAGE' });
+            response = await chrome.tabs.sendMessage(tab.id, {
+                type: 'CAPTURE_PAGE',
+                settings: settings
+            });
         } catch (msgError) {
             // Check if connection failed (content script not ready?)
             throw new Error('Failed to communicate with page. Please reload the page and try again.');
@@ -201,5 +266,14 @@ async function capturePage() {
     }
 }
 
-// Event listener
+// Event listeners
 captureBtn.addEventListener('click', capturePage);
+resetSettingsBtn.addEventListener('click', resetSettings);
+
+// Save settings when they change
+maxNodesInput.addEventListener('change', saveSettings);
+maxDepthInput.addEventListener('change', saveSettings);
+maxDurationInput.addEventListener('change', saveSettings);
+
+// Load settings on startup
+loadSettings();
