@@ -1442,7 +1442,7 @@
         if (this.shouldStopTraversal(depth))
           break;
         if (child.nodeType === Node.TEXT_NODE) {
-          const textNode = this.createTextLeaf(child, element, depth + 1);
+          const textNode = await this.createTextLeaf(child, element, depth + 1);
           if (textNode)
             collectedChildren.push(textNode);
         } else if (child.nodeType === Node.ELEMENT_NODE) {
@@ -1593,10 +1593,7 @@
             pseudoNode.fontSize = fontSize;
             pseudoNode.fontWeight = style.fontWeight;
             pseudoNode.textAlign = "CENTER";
-            const c = parseColor(style.color);
-            if (!pseudoNode.fills)
-              pseudoNode.fills = [];
-            pseudoNode.fills.push({ type: "SOLID", color: { r: c.r, g: c.g, b: c.b }, opacity: c.a });
+            pseudoNode.fills = await this.resolveTextFills(style);
           }
         } else {
           pseudoNode.type = "TEXT";
@@ -1605,10 +1602,7 @@
           pseudoNode.fontSize = parseFloat(style.fontSize);
           pseudoNode.fontWeight = style.fontWeight;
           pseudoNode.textAlign = style.textAlign.toUpperCase();
-          const color = parseColor(style.color);
-          if (!pseudoNode.fills)
-            pseudoNode.fills = [];
-          pseudoNode.fills.push({ type: "SOLID", color: { r: color.r, g: color.g, b: color.b }, opacity: color.a });
+          pseudoNode.fills = await this.resolveTextFills(style);
           this.extractTextShadows(pseudoNode, style);
         }
       }
@@ -1645,7 +1639,69 @@
         return url;
       }
     }
-    createTextLeaf(textNode, parent, depth) {
+    async resolveTextFills(style) {
+      const fills = [];
+      const bgClip = style.backgroundClip || style.webkitBackgroundClip;
+      const isTextClip = bgClip === "text";
+      const webkitFill = style.webkitTextFillColor;
+      const hasWebkitFill = webkitFill && webkitFill !== "currentcolor";
+      if (isTextClip) {
+        if (style.backgroundImage && style.backgroundImage !== "none") {
+          if (style.backgroundImage.includes("gradient")) {
+            const gradient = parseGradient(style.backgroundImage);
+            if (gradient) {
+              fills.push(gradient);
+            }
+          }
+          const regex = /url\(['"]?(.*?)['"]?\)/g;
+          let match;
+          const urls = [];
+          while ((match = regex.exec(style.backgroundImage)) !== null) {
+            if (match[1])
+              urls.push(match[1]);
+          }
+          urls.reverse();
+          for (const urlStr of urls) {
+            const url = this.normalizeUrl(urlStr);
+            try {
+              const base64 = await imageToBase64(url);
+              if (base64) {
+                fills.push({
+                  type: "IMAGE",
+                  scaleMode: "FILL",
+                  imageHash: "",
+                  _base64: base64
+                });
+              }
+            } catch (e) {
+              console.warn("Failed to load text texture", url);
+            }
+          }
+        }
+        const bgColor = parseColor(style.backgroundColor);
+        if (bgColor.a > 0 && fills.length === 0) {
+          fills.push({
+            type: "SOLID",
+            color: { r: bgColor.r, g: bgColor.g, b: bgColor.b },
+            opacity: bgColor.a
+          });
+        }
+      }
+      if (fills.length === 0) {
+        let colorStr = style.color;
+        if (hasWebkitFill) {
+          colorStr = webkitFill;
+        }
+        const color = parseColor(colorStr);
+        fills.push({
+          type: "SOLID",
+          color: { r: color.r, g: color.g, b: color.b },
+          opacity: color.a
+        });
+      }
+      return fills;
+    }
+    async createTextLeaf(textNode, parent, depth) {
       if (this.shouldStopTraversal(depth))
         return null;
       if (!this.reserveNode("text", parent, depth))
@@ -1659,7 +1715,6 @@
       const text = cleanText(textNode.textContent || "", style.whiteSpace);
       if (!text)
         return null;
-      const color = parseColor(style.color);
       const fontSize = parseFloat(style.fontSize);
       const scrollX = window.scrollX || window.pageXOffset || 0;
       const scrollY = window.scrollY || window.pageYOffset || 0;
@@ -1689,11 +1744,7 @@
         letterSpacing: parseLetterSpacing(style.letterSpacing, fontSize),
         textDecoration: parseTextDecoration(style.textDecorationLine || style.textDecoration),
         textCase: parseTextCase(style.textTransform),
-        fills: [{
-          type: "SOLID",
-          color: { r: color.r, g: color.g, b: color.b },
-          opacity: color.a
-        }]
+        fills: await this.resolveTextFills(style)
       };
       this.extractTextShadows(node, style);
       return node;

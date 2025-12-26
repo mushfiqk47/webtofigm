@@ -882,7 +882,7 @@ export class ContentCollector {
         for (const child of childNodes) {
             if (this.shouldStopTraversal(depth)) break;
             if (child.nodeType === Node.TEXT_NODE) {
-                const textNode = this.createTextLeaf(child as Text, element, depth + 1);
+                const textNode = await this.createTextLeaf(child as Text, element, depth + 1);
                 if (textNode) collectedChildren.push(textNode);
             } else if (child.nodeType === Node.ELEMENT_NODE) {
                 const childElement = child as Element;
@@ -1063,9 +1063,7 @@ export class ContentCollector {
                     pseudoNode.fontSize = fontSize;
                     pseudoNode.fontWeight = style.fontWeight;
                     pseudoNode.textAlign = 'CENTER';
-                    const c = parseColor(style.color);
-                    if (!pseudoNode.fills) pseudoNode.fills = [];
-                    pseudoNode.fills.push({ type: 'SOLID', color: { r: c.r, g: c.g, b: c.b }, opacity: c.a });
+                    pseudoNode.fills = await this.resolveTextFills(style);
                 }
             } else {
                 pseudoNode.type = 'TEXT';
@@ -1074,9 +1072,7 @@ export class ContentCollector {
                 pseudoNode.fontSize = parseFloat(style.fontSize);
                 pseudoNode.fontWeight = style.fontWeight;
                 pseudoNode.textAlign = style.textAlign.toUpperCase() as any;
-                const color = parseColor(style.color);
-                if (!pseudoNode.fills) pseudoNode.fills = [];
-                pseudoNode.fills.push({ type: 'SOLID', color: { r: color.r, g: color.g, b: color.b }, opacity: color.a });
+                pseudoNode.fills = await this.resolveTextFills(style);
 
                 this.extractTextShadows(pseudoNode, style);
             }
@@ -1119,7 +1115,86 @@ export class ContentCollector {
         }
     }
 
-    private createTextLeaf(textNode: Text, parent: HTMLElement, depth: number): LayerNode | null {
+    private async resolveTextFills(style: CSSStyleDeclaration): Promise<Paint[]> {
+        const fills: Paint[] = [];
+
+        // Check for background-clip: text (Gradient Text)
+        const bgClip = style.backgroundClip || (style as any).webkitBackgroundClip;
+        const isTextClip = bgClip === 'text';
+
+        // Check for text-fill-color override
+        const webkitFill = (style as any).webkitTextFillColor;
+        const hasWebkitFill = webkitFill && webkitFill !== 'currentcolor';
+
+        if (isTextClip) {
+            // Priority: Background Gradients/Images -> Background Color
+            
+            // 1. Gradients / Images
+            if (style.backgroundImage && style.backgroundImage !== 'none') {
+                // Gradients
+                if (style.backgroundImage.includes('gradient')) {
+                    const gradient = parseGradient(style.backgroundImage);
+                    if (gradient) {
+                        fills.push(gradient);
+                    }
+                }
+                
+                // Image Text (Texture)
+                const regex = /url\(['"]?(.*?)['"]?\)/g;
+                let match;
+                const urls: string[] = [];
+                while ((match = regex.exec(style.backgroundImage)) !== null) {
+                    if (match[1]) urls.push(match[1]);
+                }
+                urls.reverse(); // Standardize order
+
+                for (const urlStr of urls) {
+                    const url = this.normalizeUrl(urlStr);
+                    try {
+                        const base64 = await imageToBase64(url);
+                        if (base64) {
+                            fills.push({
+                                type: 'IMAGE',
+                                scaleMode: 'FILL',
+                                imageHash: '',
+                                _base64: base64
+                            });
+                        }
+                    } catch (e) {
+                        console.warn('Failed to load text texture', url);
+                    }
+                }
+            }
+
+            // 2. Background Color (if no gradient/image or blended)
+            const bgColor = parseColor(style.backgroundColor);
+            if (bgColor.a > 0 && fills.length === 0) {
+                fills.push({
+                    type: 'SOLID',
+                    color: { r: bgColor.r, g: bgColor.g, b: bgColor.b },
+                    opacity: bgColor.a
+                });
+            }
+        }
+
+        // If no fills from background clip, or explicitly using text-fill-color, or just standard color
+        if (fills.length === 0) {
+            let colorStr = style.color;
+            if (hasWebkitFill) {
+                colorStr = webkitFill;
+            }
+            const color = parseColor(colorStr);
+            fills.push({
+                type: 'SOLID',
+                color: { r: color.r, g: color.g, b: color.b },
+                opacity: color.a
+            });
+        }
+
+        return fills;
+    }
+
+    private async createTextLeaf(textNode: Text, parent: HTMLElement, depth: number): Promise<LayerNode | null> {
         if (this.shouldStopTraversal(depth)) return null;
         if (!this.reserveNode('text', parent, depth)) return null;
 
@@ -1133,7 +1208,6 @@ export class ContentCollector {
         const text = cleanText(textNode.textContent || '', style.whiteSpace);
         if (!text) return null;
 
-        const color = parseColor(style.color);
         const fontSize = parseFloat(style.fontSize);
 
         // Add scroll offset for document-relative coordinates
@@ -1163,11 +1237,7 @@ export class ContentCollector {
             letterSpacing: parseLetterSpacing(style.letterSpacing, fontSize),
             textDecoration: parseTextDecoration(style.textDecorationLine || style.textDecoration),
             textCase: parseTextCase(style.textTransform),
-            fills: [{
-                type: 'SOLID',
-                color: { r: color.r, g: color.g, b: color.b },
-                opacity: color.a
-            }]
+            fills: await this.resolveTextFills(style)
         };
         this.extractTextShadows(node, style);
         return node;
