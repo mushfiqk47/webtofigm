@@ -337,138 +337,20 @@ export class ContentCollector {
     }
 
     private extractLayout(node: LayerNode, style: CSSStyleDeclaration, element: HTMLElement) {
-        const display = style.display;
+        // FORCE ABSOLUTE POSITIONING (User Request)
+        // Bypass all Flex/Grid detection to ensure exact visual fidelity via absolute positioning.
+        node.layoutMode = 'NONE';
+        node.layoutPositioning = 'ABSOLUTE';
+        node.layoutSizingHorizontal = 'FIXED';
+        node.layoutSizingVertical = 'FIXED';
 
-        // Extract Padding
+        // Capture padding just in case, though usually ignored in absolute frames without auto-layout
         node.padding = {
             top: parseFloat(style.paddingTop) || 0,
             right: parseFloat(style.paddingRight) || 0,
             bottom: parseFloat(style.paddingBottom) || 0,
             left: parseFloat(style.paddingLeft) || 0,
         };
-
-        const isFlex = display === 'flex' || display === 'inline-flex';
-        const isGrid = display === 'grid' || display === 'inline-grid';
-
-        if (isFlex || isGrid) {
-            // Logic correction:
-            // Flex Row -> HORIZONTAL
-            // Grid Row (default) -> HORIZONTAL (L->R then wrap)
-            // Flex Column -> VERTICAL
-            // Grid Column -> VERTICAL (T->B then wrap)
-
-            let isHorizontal = false;
-            if (isFlex) {
-                isHorizontal = style.flexDirection === 'row' || style.flexDirection === 'row-reverse';
-            } else if (isGrid) {
-                // Grid default is row (horizontal flow), only column is vertical flow
-                isHorizontal = !style.gridAutoFlow.includes('column');
-            }
-
-            node.layoutMode = isHorizontal ? 'HORIZONTAL' : 'VERTICAL';
-
-            // FIDELITY FIX: Check for complex 2D grids and force absolute positioning
-            if (isGrid) {
-                const hasComplexRows = style.gridTemplateRows !== 'none' && style.gridTemplateRows.split(' ').length > 1;
-                const hasComplexCols = style.gridTemplateColumns !== 'none' && style.gridTemplateColumns.split(' ').length > 1;
-
-                if (hasComplexRows && hasComplexCols) {
-                    node.layoutMode = 'NONE';
-                    node.layoutSizingHorizontal = 'FIXED';
-                    node.layoutSizingVertical = 'FIXED';
-                    // We can return early or let it proceed, but we need to ensure we don't overwrite this later
-                    // However, we still want to capture other props. 
-                    // Setting layoutMode NONE means we should skip the flex/grid specific logic below?
-                    // The original code enters the if (isFlex || isGrid) block.
-                    // If we change it to NONE here, we should probably stop setting gaps/alignments for AutoLayout.
-                }
-            }
-
-            if (node.layoutMode !== 'NONE') {
-                const gaps = parseGap(style.gap);
-                // Fallback if shorthand failed
-                if (gaps.row === 0 && style.rowGap && style.rowGap !== 'normal') gaps.row = parseFloat(style.rowGap);
-                if (gaps.col === 0 && style.columnGap && style.columnGap !== 'normal') gaps.col = parseFloat(style.columnGap);
-
-                if (node.layoutMode === 'HORIZONTAL') {
-                    node.itemSpacing = gaps.col;
-                    node.counterAxisSpacing = gaps.row;
-                } else {
-                    node.itemSpacing = gaps.row;
-                    node.counterAxisSpacing = gaps.col;
-                }
-
-                const align = style.alignItems;
-                if (align === 'flex-start' || align === 'start') node.counterAxisAlignItems = 'MIN';
-                else if (align === 'flex-end' || align === 'end') node.counterAxisAlignItems = 'MAX';
-                else if (align === 'center') node.counterAxisAlignItems = 'CENTER';
-                else if (align === 'baseline') node.counterAxisAlignItems = 'BASELINE';
-                else if (align === 'stretch') node.counterAxisAlignItems = 'MIN';
-
-                const justify = style.justifyContent;
-                if (justify === 'flex-start' || justify === 'start') node.primaryAxisAlignItems = 'MIN';
-                else if (justify === 'flex-end' || justify === 'end') node.primaryAxisAlignItems = 'MAX';
-                else if (justify === 'center') node.primaryAxisAlignItems = 'CENTER';
-                else if (justify === 'space-between') node.primaryAxisAlignItems = 'SPACE_BETWEEN';
-
-                if (style.flexWrap === 'wrap' || isGrid) {
-                    node.layoutWrap = 'WRAP';
-                }
-            }
-
-            // FIDELITY FIX: Intelligent sizing detection instead of always HUG
-            // Horizontal sizing
-            const hasExplicitWidth = style.width !== 'auto' && style.width !== '' && !style.width.includes('%');
-            const isFullWidth = style.width === '100%' || style.width === '100vw' || style.width === '100vi';
-            const hasMinWidth = style.minWidth !== 'none' && style.minWidth !== '0px' && style.minWidth !== '';
-
-            if (isFullWidth) {
-                node.layoutSizingHorizontal = 'FILL';
-            } else if (hasExplicitWidth) {
-                node.layoutSizingHorizontal = 'FIXED';
-                // FIDELITY FIX: Force captured dimension if explicit width is set
-                node.width = element.getBoundingClientRect().width;
-            } else {
-                node.layoutSizingHorizontal = 'HUG';
-            }
-
-            // Vertical sizing
-            const hasExplicitHeight = style.height !== 'auto' && style.height !== '' && !style.height.includes('%');
-            const isFullHeight = style.height === '100%' || style.height === '100vh' || style.height === '100vb';
-            const hasMinHeight = style.minHeight !== 'none' && style.minHeight !== '0px' && style.minHeight !== '';
-
-            if (isFullHeight) {
-                node.layoutSizingVertical = 'FILL';
-            } else if (hasExplicitHeight) {
-                node.layoutSizingVertical = 'FIXED';
-            } else {
-                node.layoutSizingVertical = 'HUG';
-            }
-        } else {
-            // Non-flex/grid elements: Use absolute positioning (layoutMode = NONE)
-            node.layoutMode = 'NONE';
-
-            // Fixed sizing - elements should use their actual captured dimensions
-            node.layoutSizingHorizontal = 'FIXED';
-            node.layoutSizingVertical = 'FIXED';
-        }
-
-        // Extract flex child properties (for when THIS element is inside a flex parent)
-        const flexGrow = parseFloat(style.flexGrow);
-        if (flexGrow > 0) {
-            node.layoutGrow = flexGrow;
-        }
-
-        // Align-self for child alignment override
-        const alignSelf = style.alignSelf;
-        if (alignSelf === 'flex-start' || alignSelf === 'start') node.layoutAlign = 'MIN';
-        else if (alignSelf === 'flex-end' || alignSelf === 'end') node.layoutAlign = 'MAX';
-        else if (alignSelf === 'center') node.layoutAlign = 'CENTER';
-        else if (alignSelf === 'stretch') node.layoutAlign = 'STRETCH';
-
-        if (style.position === 'absolute' || style.position === 'fixed') {
-            node.layoutPositioning = 'ABSOLUTE';
-        }
     }
 
     private async extractBackgrounds(node: LayerNode, style: CSSStyleDeclaration) {
@@ -747,8 +629,11 @@ export class ContentCollector {
         }
     }
 
-    private handleSvg(node: LayerNode, svg: SVGElement) {
+    private async handleSvg(node: LayerNode, svg: SVGElement) {
         node.type = 'SVG';
+
+        // 1. Inline computed styles (fill, stroke, etc.) to ensure visual fidelity
+        this.inlineSvgStyles(svg);
 
         // Attempt to inline <use> tags
         try {
@@ -778,12 +663,9 @@ export class ContentCollector {
         let svgHtml = svg.outerHTML;
 
         // FIDELITY FIX: Resolve 'currentColor' to actual color
-        // Many icons use fill="currentColor" to inherit text color.
-        // Figma doesn't support this dynamic binding on import, so we bake it in.
         if (svgHtml.includes('currentColor')) {
             const style = window.getComputedStyle(svg);
             const color = style.color || 'black';
-            // Replace all instances of currentColor with the computed rgb/rgba string
             svgHtml = svgHtml.replace(/currentColor/g, color);
         }
 
@@ -791,10 +673,117 @@ export class ContentCollector {
         if (sanitized) {
             node.svgContent = sanitized;
         } else {
-            this.addWarning('Dropped unsafe SVG element');
-            node.type = 'FRAME';
-            node.name = 'SVG (sanitized)';
+            // Fallback: Rasterize to Image if vector capture fails
+            await this.rasterizeSvg(node, svg);
         }
+    }
+
+    private inlineSvgStyles(svg: SVGElement) {
+        // Recursively inline critical CSS properties for all SVG children
+        const walker = (el: Element) => {
+            if (el instanceof SVGElement) {
+                const style = window.getComputedStyle(el);
+                
+                // Fill
+                const fill = style.fill;
+                if (fill && fill !== 'none' && !el.hasAttribute('fill')) {
+                    el.setAttribute('fill', fill);
+                }
+                
+                // Stroke
+                const stroke = style.stroke;
+                if (stroke && stroke !== 'none' && !el.hasAttribute('stroke')) {
+                    el.setAttribute('stroke', stroke);
+                }
+                const strokeWidth = style.strokeWidth;
+                if (strokeWidth && strokeWidth !== '0px' && !el.hasAttribute('stroke-width')) {
+                    el.setAttribute('stroke-width', strokeWidth);
+                }
+                
+                // Opacity
+                const opacity = style.opacity;
+                if (opacity && opacity !== '1' && !el.hasAttribute('opacity')) {
+                    el.setAttribute('opacity', opacity);
+                }
+                
+                // Visibility
+                if (style.visibility === 'hidden') {
+                    el.setAttribute('visibility', 'hidden');
+                }
+                
+                // Display
+                if (style.display === 'none') {
+                    el.setAttribute('display', 'none');
+                }
+            }
+            
+            for (const child of Array.from(el.children)) {
+                walker(child);
+            }
+        };
+        
+        try {
+            walker(svg);
+        } catch (e) {
+            console.warn('Failed to inline SVG styles', e);
+        }
+    }
+
+    private async rasterizeSvg(node: LayerNode, svg: SVGElement) {
+        try {
+            const rect = svg.getBoundingClientRect();
+            const width = rect.width || 24;
+            const height = rect.height || 24;
+
+            // Serialize and encode
+            const xml = new XMLSerializer().serializeToString(svg);
+            const svg64 = btoa(unescape(encodeURIComponent(xml)));
+            const b64Start = `data:image/svg+xml;base64,${svg64}`;
+
+            const base64 = await this.loadImageToCanvas(b64Start, width, height);
+
+            if (base64) {
+                node.type = 'IMAGE';
+                node.imageBase64 = base64;
+                node.fills = [{
+                    type: 'IMAGE',
+                    scaleMode: 'FILL',
+                    imageHash: '',
+                    _base64: base64
+                }];
+                // Ensure name indicates it was rasterized
+                node.name = (node.name || 'SVG') + ' (Raster)';
+            } else {
+                node.type = 'FRAME';
+                node.name = 'SVG (Failed)';
+            }
+        } catch (e) {
+            console.warn('Rasterize SVG failed', e);
+        }
+    }
+
+    private loadImageToCanvas(url: string, width: number, height: number): Promise<string | null> {
+        return new Promise((resolve) => {
+            const img = new Image();
+            img.onload = () => {
+                const canvas = document.createElement('canvas');
+                // Scale for better quality (2x)
+                const scale = 2;
+                canvas.width = width * scale;
+                canvas.height = height * scale;
+                
+                const ctx = canvas.getContext('2d');
+                if (ctx) {
+                    ctx.scale(scale, scale);
+                    ctx.drawImage(img, 0, 0, width, height);
+                    try {
+                        resolve(canvas.toDataURL('image/png'));
+                    } catch { resolve(null); }
+                } else { resolve(null); }
+            };
+            img.onerror = () => resolve(null);
+            img.src = url;
+        });
     }
 
     private async handleVideo(node: LayerNode, video: HTMLVideoElement) {
@@ -1032,20 +1021,94 @@ export class ContentCollector {
 
         const cleanContent = content.replace(/['"]/g, '');
         if (cleanContent && cleanContent.length > 0 && !urlMatch) {
-            pseudoNode.type = 'TEXT';
-            pseudoNode.text = cleanContent;
-            pseudoNode.fontFamily = style.fontFamily.split(',')[0].replace(/['"]/g, '');
-            pseudoNode.fontSize = parseFloat(style.fontSize);
-            pseudoNode.fontWeight = style.fontWeight;
-            pseudoNode.textAlign = style.textAlign.toUpperCase() as any;
-            const color = parseColor(style.color);
-            if (!pseudoNode.fills) pseudoNode.fills = [];
-            pseudoNode.fills.push({ type: 'SOLID', color: { r: color.r, g: color.g, b: color.b }, opacity: color.a });
+            // FIDELITY FIX: Check for icon fonts or single characters that might be icons
+            const fontFamily = style.fontFamily.toLowerCase();
+            const isIconFont = fontFamily.includes('icon') || fontFamily.includes('awesome') || fontFamily.includes('material') || fontFamily.includes('glyph');
+            // If it's a single char and not a standard letter/number, it's likely an icon
+            const isSingleChar = cleanContent.length === 1 && !/[a-zA-Z0-9]/.test(cleanContent);
 
-            this.extractTextShadows(pseudoNode, style);
+            if (isIconFont || isSingleChar) {
+                // RASTERIZE ICON FONTS
+                // We can't easily rasterize a pseudo-element directly via HTMLCanvasElement.
+                // Best effort: Try to create a canvas, set font, and draw text.
+                const fontSize = parseFloat(style.fontSize) || 16;
+                const fontWeight = style.fontWeight || 'normal';
+                const font = `${fontWeight} ${fontSize}px ${style.fontFamily}`;
+                const color = style.color || '#000000';
+                
+                // approximate width/height if 0
+                const drawW = pseudoNode.width || fontSize * 1.5;
+                const drawH = pseudoNode.height || fontSize * 1.5;
+
+                const base64 = await this.textToImage(cleanContent, font, color, drawW, drawH);
+                
+                if (base64) {
+                    pseudoNode.type = 'IMAGE';
+                    pseudoNode.name = `${pseudoType} (Icon)`;
+                    pseudoNode.imageBase64 = base64;
+                    if (!pseudoNode.fills) pseudoNode.fills = [];
+                    pseudoNode.fills.push({
+                        type: 'IMAGE',
+                        scaleMode: 'FILL',
+                        imageHash: '',
+                        _base64: base64
+                    });
+                    if (pseudoNode.width === 0) pseudoNode.width = drawW;
+                    if (pseudoNode.height === 0) pseudoNode.height = drawH;
+                } else {
+                    // Fallback to text if canvas fails
+                    pseudoNode.type = 'TEXT';
+                    pseudoNode.text = cleanContent;
+                    pseudoNode.fontFamily = style.fontFamily.split(',')[0].replace(/['"]/g, '');
+                    pseudoNode.fontSize = fontSize;
+                    pseudoNode.fontWeight = style.fontWeight;
+                    pseudoNode.textAlign = 'CENTER';
+                    const c = parseColor(style.color);
+                    if (!pseudoNode.fills) pseudoNode.fills = [];
+                    pseudoNode.fills.push({ type: 'SOLID', color: { r: c.r, g: c.g, b: c.b }, opacity: c.a });
+                }
+            } else {
+                pseudoNode.type = 'TEXT';
+                pseudoNode.text = cleanContent;
+                pseudoNode.fontFamily = style.fontFamily.split(',')[0].replace(/['"]/g, '');
+                pseudoNode.fontSize = parseFloat(style.fontSize);
+                pseudoNode.fontWeight = style.fontWeight;
+                pseudoNode.textAlign = style.textAlign.toUpperCase() as any;
+                const color = parseColor(style.color);
+                if (!pseudoNode.fills) pseudoNode.fills = [];
+                pseudoNode.fills.push({ type: 'SOLID', color: { r: color.r, g: color.g, b: color.b }, opacity: color.a });
+
+                this.extractTextShadows(pseudoNode, style);
+            }
         }
 
         return pseudoNode;
+    }
+
+    private textToImage(text: string, font: string, color: string, width: number, height: number): Promise<string | null> {
+        return new Promise((resolve) => {
+            try {
+                const canvas = document.createElement('canvas');
+                const scale = 2; // Retina quality
+                canvas.width = width * scale;
+                canvas.height = height * scale;
+                const ctx = canvas.getContext('2d');
+                if (!ctx) { resolve(null); return; }
+
+                ctx.scale(scale, scale);
+                ctx.font = font;
+                ctx.fillStyle = color;
+                ctx.textBaseline = 'middle';
+                ctx.textAlign = 'center';
+                
+                // Draw in center
+                ctx.fillText(text, width / 2, height / 2);
+                
+                resolve(canvas.toDataURL('image/png'));
+            } catch (e) {
+                resolve(null);
+            }
+        });
     }
 
     private normalizeUrl(url: string): string {
