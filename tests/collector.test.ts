@@ -2,23 +2,38 @@
  * Basic tests for ContentCollector
  * These tests verify core functionality of the HTML-to-Figma conversion
  */
+import { TextDecoder, TextEncoder } from 'util';
+global.TextDecoder = TextDecoder as any;
+global.TextEncoder = TextEncoder as any;
 
 import { ContentCollector } from '../src/capture/collector';
-import { JSDOM } from 'jsdom';
 
 describe('ContentCollector', () => {
-    let dom: JSDOM;
-    let document: Document;
-    let window: Window;
+    // We use the global document/window provided by jest-environment-jsdom
 
     beforeEach(() => {
-        dom = new JSDOM('<!DOCTYPE html><html><body></body></html>');
-        document = dom.window.document;
-        window = dom.window as unknown as Window;
+        // Clear body before each test
+        document.body.innerHTML = '';
 
-        // Mock global window and document
-        global.document = document;
-        global.window = window as any;
+        // Mock getBoundingClientRect globally for HTMLElements
+        // This is necessary because JSDOM doesn't calculate layout
+        Object.defineProperty(HTMLElement.prototype, 'getBoundingClientRect', {
+            configurable: true,
+            value: function() {
+                const style = window.getComputedStyle(this);
+                return {
+                    width: parseFloat(style.width) || 0,
+                    height: parseFloat(style.height) || 0,
+                    top: 0,
+                    left: 0,
+                    right: parseFloat(style.width) || 0,
+                    bottom: parseFloat(style.height) || 0,
+                    x: 0,
+                    y: 0,
+                    toJSON: () => {}
+                };
+            }
+        });
     });
 
     describe('Basic Element Capture', () => {

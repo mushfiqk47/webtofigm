@@ -3,10 +3,12 @@ module.exports = {
   preset: 'ts-jest',
   testEnvironment: 'jsdom',
   roots: ['<rootDir>'],
-  transform: {
-    '^.+\.tsx?$': 'ts-jest',
-  },
   moduleNameMapper: {
-    // Handle specific aliases if any
+    '^(\\.{1,2}/.*)\\.js$': '$1',
   },
+  transform: {
+    '^.+\\.tsx?$': 'ts-jest',
+    '^.+\\.js$': 'babel-jest',
+  },
+  transformIgnorePatterns: []
 };

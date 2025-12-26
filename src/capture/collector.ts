@@ -750,9 +750,12 @@ export class ContentCollector {
     private handleSvg(node: LayerNode, svg: SVGElement) {
         node.type = 'SVG';
 
+        // PERFORMANCE FIX: Clone SVG before processing to avoid DOM thrashing and live DOM mutation
+        const clonedSvg = svg.cloneNode(true) as SVGElement;
+
         // Attempt to inline <use> tags
         try {
-            const useTags = Array.from(svg.querySelectorAll('use'));
+            const useTags = Array.from(clonedSvg.querySelectorAll('use'));
             for (const use of useTags) {
                 const href = use.getAttribute('href') || use.getAttribute('xlink:href');
                 if (href && href.startsWith('#')) {
@@ -775,7 +778,7 @@ export class ContentCollector {
             console.warn('Failed to inline SVG use tags', e);
         }
 
-        let svgHtml = svg.outerHTML;
+        let svgHtml = clonedSvg.outerHTML;
 
         // FIDELITY FIX: Resolve 'currentColor' to actual color
         // Many icons use fill="currentColor" to inherit text color.
