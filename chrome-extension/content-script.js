@@ -333,7 +333,7 @@
   }
   function parseLineHeight(lineHeight, fontSize) {
     if (!lineHeight || lineHeight === "normal") {
-      return { value: 120, unit: "PERCENT" }; // Default browser fallback approx 1.2
+      return void 0;
     }
     if (lineHeight.endsWith("%")) {
       return { value: parseFloat(lineHeight), unit: "PERCENT" };
@@ -341,7 +341,6 @@
     if (lineHeight.endsWith("px")) {
       return { value: parseFloat(lineHeight), unit: "PIXELS" };
     }
-    // Handle unitless multiplier (e.g. "1.5")
     const multiplier = parseFloat(lineHeight);
     if (!isNaN(multiplier)) {
       return { value: multiplier * 100, unit: "PERCENT" };
@@ -828,21 +827,8 @@
         const isDocumentRoot = element === document.documentElement || element === document.body;
         const scrollX = window.scrollX || window.pageXOffset || 0;
         const scrollY = window.scrollY || window.pageYOffset || 0;
-        
-        // Use offset dimensions for elements to get "untransformed" layout size
-        // This prevents bounding box inflation when rotation is applied
-        // But fallback to rect for root or SVG elements where offset might be missing
-        let width = rect.width;
-        let height = rect.height;
-        
-        if (!isDocumentRoot && element instanceof HTMLElement && element.offsetWidth > 0) {
-            width = element.offsetWidth;
-            height = element.offsetHeight;
-        } else if (isDocumentRoot) {
-            width = Math.max(rect.width, document.documentElement.scrollWidth, document.documentElement.clientWidth);
-            height = Math.max(rect.height, document.documentElement.scrollHeight, document.documentElement.clientHeight);
-        }
-
+        const width = isDocumentRoot ? Math.max(rect.width, document.documentElement.scrollWidth, document.documentElement.clientWidth) : rect.width;
+        const height = isDocumentRoot ? Math.max(rect.height, document.documentElement.scrollHeight, document.documentElement.clientHeight) : rect.height;
         const opacity = parseFloat(style.opacity);
         const node = {
           type: "FRAME",
@@ -876,8 +862,6 @@
           const tagName = element.tagName.toUpperCase();
           if (tagName === "IMG") {
             await this.handleImage(node, element);
-          } else if (tagName === "INPUT" || tagName === "TEXTAREA") {
-            await this.handleInput(node, element);
           } else if (tagName === "SVG" || element instanceof SVGSVGElement) {
             this.handleSvg(node, element);
           } else if (tagName === "VIDEO") {
@@ -898,11 +882,51 @@
         if (this.shouldPrune(node)) {
           node.isContentOnly = true;
         }
+        if (node.layoutPositioning !== "ABSOLUTE" && !isDocumentRoot) {
+          const margins = {
+            top: parseFloat(style.marginTop) || 0,
+            right: parseFloat(style.marginRight) || 0,
+            bottom: parseFloat(style.marginBottom) || 0,
+            left: parseFloat(style.marginLeft) || 0
+          };
+          if (margins.top > 1 || margins.right > 1 || margins.bottom > 1 || margins.left > 1) {
+            return this.createMarginWrapper(node, margins);
+          }
+        }
         return node;
       } catch (e) {
         console.warn("Error collecting node", element, e);
         return null;
       }
+    }
+    createMarginWrapper(node, margins) {
+      const wrapper = {
+        type: "FRAME",
+        name: `Margin Wrapper (${node.name})`,
+        x: node.x - margins.left,
+        y: node.y - margins.top,
+        width: node.width + margins.left + margins.right,
+        height: node.height + margins.top + margins.bottom,
+        opacity: 1,
+        blendMode: "NORMAL",
+        fills: [],
+        // Transparent
+        strokes: [],
+        effects: [],
+        children: [node],
+        layoutMode: "VERTICAL",
+        // Default to vertical to hold the child
+        layoutSizingHorizontal: node.layoutSizingHorizontal === "FIXED" ? "HUG" : node.layoutSizingHorizontal,
+        // Hug the child
+        layoutSizingVertical: node.layoutSizingVertical === "FIXED" ? "HUG" : node.layoutSizingVertical,
+        padding: margins,
+        itemSpacing: 0
+      };
+      if (node.layoutSizingHorizontal === "FILL")
+        wrapper.layoutSizingHorizontal = "FILL";
+      if (node.layoutSizingVertical === "FILL")
+        wrapper.layoutSizingVertical = "FILL";
+      return wrapper;
     }
     extractFilters(node, style) {
       if (style.filter && style.filter !== "none") {
@@ -1056,12 +1080,11 @@
     }
     async extractBackgrounds(node, style) {
       const color = parseColor(style.backgroundColor);
-      // Only add fill if it is visible (alpha > 0)
       if (color.a > 0) {
         node.fills?.push({
           type: "SOLID",
           color: { r: color.r, g: color.g, b: color.b },
-          opacity: color.a // Use the alpha channel from rgba
+          opacity: color.a
         });
       }
       if (style.backgroundImage && style.backgroundImage !== "none") {
@@ -1072,10 +1095,6 @@
             node.isContentOnly = false;
           }
         }
-        
-        const bgSizes = (style.backgroundSize || 'auto').split(',').map(s => s.trim());
-        const bgRepeats = (style.backgroundRepeat || 'repeat').split(',').map(s => s.trim());
-        
         const regex = /url\(['"]?(.*?)['"]?\)/g;
         let match;
         const urls = [];
@@ -1084,30 +1103,15 @@
             urls.push(match[1]);
           }
         }
-        
-        // Reverse to match Figma's bottom-up fill order (CSS is top-down)
         urls.reverse();
-        
-        const imagePromises = urls.map(async (urlStr, i) => {
-          // Calculate original index to match with background-size/repeat lists
-          const originalIndex = urls.length - 1 - i;
-          const size = bgSizes[originalIndex] || bgSizes[0] || 'auto';
-          const repeat = bgRepeats[originalIndex] || bgRepeats[0] || 'repeat';
-          
-          let scaleMode = 'FILL';
-          if (repeat.includes('repeat')) {
-            scaleMode = 'TILE';
-          } else if (size === 'contain') {
-            scaleMode = 'FIT';
-          }
-        
+        const imagePromises = urls.map(async (urlStr) => {
           const url = this.normalizeUrl(urlStr);
           try {
             const base64 = await imageToBase64(url);
             if (base64) {
               return {
                 type: "IMAGE",
-                scaleMode: scaleMode,
+                scaleMode: "FILL",
                 imageHash: "",
                 _base64: base64
               };
@@ -1165,88 +1169,15 @@
       }
     }
     extractBorders(node, style) {
-      const top = parseFloat(style.borderTopWidth) || 0;
-      const right = parseFloat(style.borderRightWidth) || 0;
-      const bottom = parseFloat(style.borderBottomWidth) || 0;
-      const left = parseFloat(style.borderLeftWidth) || 0;
-
-      if (top === 0 && right === 0 && bottom === 0 && left === 0) return;
-      if (style.borderStyle === "none") return;
-
-      const topColorStr = style.borderTopColor;
-      const rightColorStr = style.borderRightColor;
-      const bottomColorStr = style.borderBottomColor;
-      const leftColorStr = style.borderLeftColor;
-      
-      const sameWidth = top === right && right === bottom && bottom === left;
-      const sameColor = topColorStr === rightColorStr && rightColorStr === bottomColorStr && bottomColorStr === leftColorStr;
-      const sameStyle = style.borderTopStyle === style.borderRightStyle && style.borderRightStyle === style.borderBottomStyle && style.borderBottomStyle === style.borderLeftStyle;
-
-      if (sameWidth && sameColor && sameStyle) {
-        // Uniform Border -> Use Stroke
-        const color = parseColor(topColorStr);
+      if (style.borderStyle !== "none" && parseFloat(style.borderWidth) > 0) {
+        const color = parseColor(style.borderColor);
         node.strokes?.push({
           type: "SOLID",
           color: { r: color.r, g: color.g, b: color.b },
           opacity: color.a
         });
-        node.strokeWeight = top;
-      } else {
-        // Non-Uniform -> Create "Line" Children
-        if (!node.children) node.children = [];
-
-        // Top
-        if (top > 0 && style.borderTopStyle !== 'none') {
-           this.addBorderChild(node, 'TOP', top, topColorStr);
-        }
-        // Bottom
-        if (bottom > 0 && style.borderBottomStyle !== 'none') {
-           this.addBorderChild(node, 'BOTTOM', bottom, bottomColorStr);
-        }
-        // Left
-        if (left > 0 && style.borderLeftStyle !== 'none') {
-           this.addBorderChild(node, 'LEFT', left, leftColorStr);
-        }
-        // Right
-        if (right > 0 && style.borderRightStyle !== 'none') {
-           this.addBorderChild(node, 'RIGHT', right, rightColorStr);
-        }
+        node.strokeWeight = parseFloat(style.borderWidth);
       }
-    }
-
-    addBorderChild(parent, side, weight, colorStr) {
-       const color = parseColor(colorStr);
-       const child = {
-           type: "FRAME",
-           name: `Border-${side}`,
-           x: parent.x,
-           y: parent.y,
-           width: parent.width,
-           height: parent.height,
-           fills: [{
-               type: "SOLID",
-               color: { r: color.r, g: color.g, b: color.b },
-               opacity: color.a
-           }],
-           strokes: [],
-           effects: [],
-           children: [],
-           layoutPositioning: "ABSOLUTE"
-       };
-
-       if (side === 'TOP') {
-           child.height = weight;
-       } else if (side === 'BOTTOM') {
-           child.y = parent.y + parent.height - weight;
-           child.height = weight;
-       } else if (side === 'LEFT') {
-           child.width = weight;
-       } else if (side === 'RIGHT') {
-           child.x = parent.x + parent.width - weight;
-           child.width = weight;
-       }
-       
-       parent.children.push(child);
     }
     extractShadows(node, style) {
       if (style.boxShadow && style.boxShadow !== "none") {
@@ -1300,81 +1231,8 @@
       };
       return map[style.mixBlendMode] || "NORMAL";
     }
-    async handleInput(node, element) {
-      const type = element.type;
-      const style = window.getComputedStyle(element);
-
-      if (type === 'checkbox' || type === 'radio') {
-        const isChecked = element.checked;
-        const color = parseColor(style.color || style.borderColor || '#000000');
-        const colorHex = this.rgbToHex(color);
-        
-        // Simple SVG representations
-        let svgContent = '';
-        if (type === 'radio') {
-            svgContent = isChecked 
-                ? `<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" stroke="${colorHex}" stroke-width="2" fill="none"/><circle cx="8" cy="8" r="4" fill="${colorHex}"/></svg>`
-                : `<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" stroke="${colorHex}" stroke-width="2" fill="none"/></svg>`;
-        } else {
-            // Checkbox
-            svgContent = isChecked
-                ? `<svg viewBox="0 0 16 16"><rect x="1" y="1" width="14" height="14" rx="2" stroke="${colorHex}" stroke-width="2" fill="${colorHex}"/><path d="M4 8l3 3 5-5" stroke="white" stroke-width="2" fill="none"/></svg>`
-                : `<svg viewBox="0 0 16 16"><rect x="1" y="1" width="14" height="14" rx="2" stroke="${colorHex}" stroke-width="2" fill="none"/></svg>`;
-        }
-        
-        node.type = "SVG";
-        node.svgContent = svgContent;
-        // Adjust size if it's too small (native inputs often report 13x13)
-        if (node.width < 16) node.width = 16;
-        if (node.height < 16) node.height = 16;
-        return;
-      }
-
-      const value = element.value || element.getAttribute("placeholder") || "";
-      if (value) {
-        // Create a text leaf for the input value
-        const textNode = {
-          type: "TEXT",
-          name: "Value",
-          x: node.x + (parseFloat(style.paddingLeft) || 0),
-          y: node.y + (parseFloat(style.paddingTop) || 0),
-          width: node.width - (parseFloat(style.paddingLeft) || 0) - (parseFloat(style.paddingRight) || 0),
-          height: node.height - (parseFloat(style.paddingTop) || 0) - (parseFloat(style.paddingBottom) || 0),
-          text: value,
-          fontFamily: style.fontFamily.split(",")[0].replace(/['"]/g, ""),
-          fontWeight: style.fontWeight,
-          fontSize: parseFloat(style.fontSize),
-          textAlign: style.textAlign.toUpperCase(),
-          lineHeight: parseLineHeight(style.lineHeight, parseFloat(style.fontSize)),
-          letterSpacing: parseLetterSpacing(style.letterSpacing, parseFloat(style.fontSize)),
-          fills: [{
-            type: "SOLID",
-            color: parseColor(style.color),
-            opacity: 1
-          }]
-        };
-        
-        // Ensure color is formatted correctly
-        const color = parseColor(style.color);
-        textNode.fills[0].color = { r: color.r, g: color.g, b: color.b };
-        textNode.fills[0].opacity = color.a;
-
-        if (!node.children) node.children = [];
-        node.children.push(textNode);
-      }
-    }
-    
-    rgbToHex(color) {
-        const toHex = (c) => Math.round(c * 255).toString(16).padStart(2, '0');
-        return `#${toHex(color.r)}${toHex(color.g)}${toHex(color.b)}`;
-    }
-
     async handleImage(node, img) {
       node.type = "IMAGE";
-      const style = window.getComputedStyle(img);
-      const objectFit = style.objectFit;
-      const scaleMode = objectFit === "contain" ? "FIT" : "FILL";
-
       let url = img.currentSrc || img.src;
       const dataset = img.dataset;
       if (dataset.src)
@@ -1423,7 +1281,7 @@
         node.imageBase64 = url;
         node.fills?.push({
           type: "IMAGE",
-          scaleMode: scaleMode,
+          scaleMode: "FILL",
           imageHash: "",
           _base64: url
         });
@@ -1455,7 +1313,7 @@
         node.imageBase64 = base64;
         node.fills?.push({
           type: "IMAGE",
-          scaleMode: scaleMode,
+          scaleMode: "FILL",
           imageHash: "",
           _base64: base64
         });
@@ -1584,22 +1442,6 @@
       const beforeNode = await this.collectPseudoElement(node, element, "::before", depth + 1);
       if (beforeNode)
         collectedChildren.push(beforeNode);
-
-      // Shadow DOM Support
-      if (element.shadowRoot) {
-        const shadowChildren = Array.from(element.shadowRoot.childNodes);
-        for (const child of shadowChildren) {
-           if (this.shouldStopTraversal(depth)) break;
-           if (child.nodeType === Node.ELEMENT_NODE) {
-             const childLayer = await this.collect(child, depth + 1);
-             if (childLayer) collectedChildren.push(childLayer);
-           } else if (child.nodeType === Node.TEXT_NODE) {
-              const textNode = this.createTextLeaf(child, element, depth + 1);
-              if (textNode) collectedChildren.push(textNode);
-           }
-        }
-      }
-
       for (const child of childNodes) {
         if (this.shouldStopTraversal(depth))
           break;
@@ -1771,37 +1613,27 @@
         fontFamily: style.fontFamily.split(",")[0].replace(/['"]/g, ""),
         fontWeight: style.fontWeight,
         fontSize,
-        textAlign: style.textAlign.toUpperCase(),
+        textAlign: (() => {
+          const align = style.textAlign.toLowerCase();
+          if (align === "center")
+            return "CENTER";
+          if (align === "right" || align === "end")
+            return "RIGHT";
+          if (align === "justify")
+            return "JUSTIFIED";
+          return "LEFT";
+        })(),
         // Enhanced text properties
         lineHeight: parseLineHeight(style.lineHeight, fontSize),
         letterSpacing: parseLetterSpacing(style.letterSpacing, fontSize),
         textDecoration: parseTextDecoration(style.textDecorationLine || style.textDecoration),
         textCase: parseTextCase(style.textTransform),
-        fills: []
+        fills: [{
+          type: "SOLID",
+          color: { r: color.r, g: color.g, b: color.b },
+          opacity: color.a
+        }]
       };
-
-      const bgClip = style.webkitBackgroundClip || style.backgroundClip;
-      if (bgClip === 'text') {
-         // Try to extract gradient from parent if the text is transparent
-         // Note: Accessing parent style again to get the background image
-         const parentStyle = window.getComputedStyle(parent);
-         if (parentStyle.backgroundImage && parentStyle.backgroundImage.includes('gradient')) {
-             const gradient = parseGradient(parentStyle.backgroundImage);
-             if (gradient) {
-                 node.fills.push(gradient);
-             }
-         }
-      }
-
-      // Fallback or Standard Color
-      if (node.fills.length === 0) {
-          node.fills.push({
-            type: "SOLID",
-            color: { r: color.r, g: color.g, b: color.b },
-            opacity: color.a
-          });
-      }
-
       this.extractTextShadows(node, style);
       return node;
     }

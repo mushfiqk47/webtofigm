@@ -210,11 +210,61 @@ export class ContentCollector {
                 node.isContentOnly = true;
             }
 
+            // FIDELITY FIX: Handle Margins by wrapping in a Frame
+            // Figma Auto Layout does not support margins on children, only padding on parents or gaps.
+            // To preserve exact spacing, we wrap elements with significant margins in a transparent frame with padding.
+            if (node.layoutPositioning !== 'ABSOLUTE' && !isDocumentRoot) {
+                const margins = {
+                    top: parseFloat(style.marginTop) || 0,
+                    right: parseFloat(style.marginRight) || 0,
+                    bottom: parseFloat(style.marginBottom) || 0,
+                    left: parseFloat(style.marginLeft) || 0
+                };
+
+                // Only wrap if there are actual margins
+                if (margins.top > 1 || margins.right > 1 || margins.bottom > 1 || margins.left > 1) {
+                    return this.createMarginWrapper(node, margins);
+                }
+            }
+
             return node;
         } catch (e) {
             console.warn('Error collecting node', element, e);
             return null;
         }
+    }
+
+    private createMarginWrapper(node: LayerNode, margins: { top: number, right: number, bottom: number, left: number }): LayerNode {
+        const wrapper: LayerNode = {
+            type: 'FRAME',
+            name: `Margin Wrapper (${node.name})`,
+            x: node.x - margins.left,
+            y: node.y - margins.top,
+            width: node.width + margins.left + margins.right,
+            height: node.height + margins.top + margins.bottom,
+            opacity: 1,
+            blendMode: 'NORMAL',
+            fills: [], // Transparent
+            strokes: [],
+            effects: [],
+            children: [node],
+            layoutMode: 'VERTICAL', // Default to vertical to hold the child
+            layoutSizingHorizontal: node.layoutSizingHorizontal === 'FIXED' ? 'HUG' : node.layoutSizingHorizontal, // Hug the child
+            layoutSizingVertical: node.layoutSizingVertical === 'FIXED' ? 'HUG' : node.layoutSizingVertical,
+            padding: margins,
+            itemSpacing: 0
+        };
+
+        // Adjust child position inside wrapper (relative to wrapper)
+        // Auto Layout handles this via padding, but for initial state:
+        // node.x becomes 0 (relative to content box) -> actually with padding it's handled.
+
+        // If the child was FILL, the wrapper should be FILL?
+        // If child is FILL, wrapper FILL.
+        if (node.layoutSizingHorizontal === 'FILL') wrapper.layoutSizingHorizontal = 'FILL';
+        if (node.layoutSizingVertical === 'FILL') wrapper.layoutSizingVertical = 'FILL';
+
+        return wrapper;
     }
 
     private extractFilters(node: LayerNode, style: CSSStyleDeclaration) {
@@ -1016,7 +1066,13 @@ export class ContentCollector {
             fontFamily: style.fontFamily.split(',')[0].replace(/['"]/g, ''),
             fontWeight: style.fontWeight,
             fontSize: fontSize,
-            textAlign: style.textAlign.toUpperCase() as 'LEFT' | 'CENTER' | 'RIGHT' | 'JUSTIFIED',
+            textAlign: ((): 'LEFT' | 'CENTER' | 'RIGHT' | 'JUSTIFIED' => {
+                const align = style.textAlign.toLowerCase();
+                if (align === 'center') return 'CENTER';
+                if (align === 'right' || align === 'end') return 'RIGHT';
+                if (align === 'justify') return 'JUSTIFIED';
+                return 'LEFT';
+            })(),
             // Enhanced text properties
             lineHeight: parseLineHeight(style.lineHeight, fontSize),
             letterSpacing: parseLetterSpacing(style.letterSpacing, fontSize),
