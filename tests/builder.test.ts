@@ -36,7 +36,7 @@ const mockFigma = {
     createImage: jest.fn(() => ({ hash: 'mock-hash' }))
 };
 
-global.figma = mockFigma as any;
+(global as any).figma = mockFigma;
 
 describe('Builder', () => {
     let builder: Builder;

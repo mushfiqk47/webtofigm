@@ -206,8 +206,9 @@ export class ContentCollector {
             }
 
             // 6. Pruning
+            // FIDELITY FIX: Disable pruning to ensure every DOM element exists in Figma
             if (this.shouldPrune(node)) {
-                node.isContentOnly = true;
+                // node.isContentOnly = true; 
             }
 
             // FIDELITY FIX: Handle Margins by wrapping in a Frame
@@ -366,34 +367,53 @@ export class ContentCollector {
 
             node.layoutMode = isHorizontal ? 'HORIZONTAL' : 'VERTICAL';
 
-            const gaps = parseGap(style.gap);
-            // Fallback if shorthand failed
-            if (gaps.row === 0 && style.rowGap && style.rowGap !== 'normal') gaps.row = parseFloat(style.rowGap);
-            if (gaps.col === 0 && style.columnGap && style.columnGap !== 'normal') gaps.col = parseFloat(style.columnGap);
+            // FIDELITY FIX: Check for complex 2D grids and force absolute positioning
+            if (isGrid) {
+                const hasComplexRows = style.gridTemplateRows !== 'none' && style.gridTemplateRows.split(' ').length > 1;
+                const hasComplexCols = style.gridTemplateColumns !== 'none' && style.gridTemplateColumns.split(' ').length > 1;
 
-            if (node.layoutMode === 'HORIZONTAL') {
-                node.itemSpacing = gaps.col;
-                node.counterAxisSpacing = gaps.row;
-            } else {
-                node.itemSpacing = gaps.row;
-                node.counterAxisSpacing = gaps.col;
+                if (hasComplexRows && hasComplexCols) {
+                    node.layoutMode = 'NONE';
+                    node.layoutSizingHorizontal = 'FIXED';
+                    node.layoutSizingVertical = 'FIXED';
+                    // We can return early or let it proceed, but we need to ensure we don't overwrite this later
+                    // However, we still want to capture other props. 
+                    // Setting layoutMode NONE means we should skip the flex/grid specific logic below?
+                    // The original code enters the if (isFlex || isGrid) block.
+                    // If we change it to NONE here, we should probably stop setting gaps/alignments for AutoLayout.
+                }
             }
 
-            const align = style.alignItems;
-            if (align === 'flex-start' || align === 'start') node.counterAxisAlignItems = 'MIN';
-            else if (align === 'flex-end' || align === 'end') node.counterAxisAlignItems = 'MAX';
-            else if (align === 'center') node.counterAxisAlignItems = 'CENTER';
-            else if (align === 'baseline') node.counterAxisAlignItems = 'BASELINE';
-            else if (align === 'stretch') node.counterAxisAlignItems = 'MIN';
+            if (node.layoutMode !== 'NONE') {
+                const gaps = parseGap(style.gap);
+                // Fallback if shorthand failed
+                if (gaps.row === 0 && style.rowGap && style.rowGap !== 'normal') gaps.row = parseFloat(style.rowGap);
+                if (gaps.col === 0 && style.columnGap && style.columnGap !== 'normal') gaps.col = parseFloat(style.columnGap);
 
-            const justify = style.justifyContent;
-            if (justify === 'flex-start' || justify === 'start') node.primaryAxisAlignItems = 'MIN';
-            else if (justify === 'flex-end' || justify === 'end') node.primaryAxisAlignItems = 'MAX';
-            else if (justify === 'center') node.primaryAxisAlignItems = 'CENTER';
-            else if (justify === 'space-between') node.primaryAxisAlignItems = 'SPACE_BETWEEN';
+                if (node.layoutMode === 'HORIZONTAL') {
+                    node.itemSpacing = gaps.col;
+                    node.counterAxisSpacing = gaps.row;
+                } else {
+                    node.itemSpacing = gaps.row;
+                    node.counterAxisSpacing = gaps.col;
+                }
 
-            if (style.flexWrap === 'wrap' || isGrid) {
-                node.layoutWrap = 'WRAP';
+                const align = style.alignItems;
+                if (align === 'flex-start' || align === 'start') node.counterAxisAlignItems = 'MIN';
+                else if (align === 'flex-end' || align === 'end') node.counterAxisAlignItems = 'MAX';
+                else if (align === 'center') node.counterAxisAlignItems = 'CENTER';
+                else if (align === 'baseline') node.counterAxisAlignItems = 'BASELINE';
+                else if (align === 'stretch') node.counterAxisAlignItems = 'MIN';
+
+                const justify = style.justifyContent;
+                if (justify === 'flex-start' || justify === 'start') node.primaryAxisAlignItems = 'MIN';
+                else if (justify === 'flex-end' || justify === 'end') node.primaryAxisAlignItems = 'MAX';
+                else if (justify === 'center') node.primaryAxisAlignItems = 'CENTER';
+                else if (justify === 'space-between') node.primaryAxisAlignItems = 'SPACE_BETWEEN';
+
+                if (style.flexWrap === 'wrap' || isGrid) {
+                    node.layoutWrap = 'WRAP';
+                }
             }
 
             // FIDELITY FIX: Intelligent sizing detection instead of always HUG
@@ -406,6 +426,8 @@ export class ContentCollector {
                 node.layoutSizingHorizontal = 'FILL';
             } else if (hasExplicitWidth) {
                 node.layoutSizingHorizontal = 'FIXED';
+                // FIDELITY FIX: Force captured dimension if explicit width is set
+                node.width = element.getBoundingClientRect().width;
             } else {
                 node.layoutSizingHorizontal = 'HUG';
             }

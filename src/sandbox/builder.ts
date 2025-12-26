@@ -6,7 +6,7 @@ import { FontLoader } from './font-loader';
 
 export class Builder {
 
-    constructor(private warn: (message: string) => void = () => {}) {}
+    constructor(private warn: (message: string) => void = () => { }) { }
 
     async build(node: LayerNode, isRootNode: boolean = true, parentAbsoluteX: number = 0, parentAbsoluteY: number = 0): Promise<SceneNode | null> {
         try {
@@ -180,9 +180,17 @@ export class Builder {
             await FontLoader.load(family, style);
             textNode.fontName = { family, style };
         } catch (e) {
-            // Fallback to Inter
-            await figma.loadFontAsync({ family: 'Inter', style: 'Regular' });
-            textNode.fontName = { family: 'Inter', style: 'Regular' };
+            // FIDELITY FIX: improved fallback logic
+            console.warn(`Font ${family} not found, using Inter`);
+            try {
+                // Try a safer system font before defaulting to Inter
+                await figma.loadFontAsync({ family: 'Roboto', style: 'Regular' });
+                textNode.fontName = { family: 'Roboto', style: 'Regular' };
+            } catch (e2) {
+                // Final fallback
+                await figma.loadFontAsync({ family: 'Inter', style: 'Regular' });
+                textNode.fontName = { family: 'Inter', style: 'Regular' };
+            }
         }
 
         textNode.characters = node.text || ' '; // Empty string can crash text node resize sometimes
