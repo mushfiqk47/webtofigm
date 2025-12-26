@@ -2,23 +2,64 @@
  * Integration tests - End-to-end conversion pipeline
  */
 
+import { TextEncoder, TextDecoder } from 'util';
+global.TextEncoder = TextEncoder as any;
+global.TextDecoder = TextDecoder as any;
+
 import { ContentCollector } from '../src/capture/collector';
 import { Builder } from '../src/sandbox/builder';
 import { encodeHtfig, decodeHtfig } from '../src/types/file-format';
-import { JSDOM } from 'jsdom';
 
 describe('Integration Tests', () => {
-    let dom: JSDOM;
-    let document: Document;
-    let window: Window;
-
     beforeEach(() => {
-        dom = new JSDOM('<!DOCTYPE html><html><body></body></html>');
-        document = dom.window.document;
-        window = dom.window as unknown as Window;
+        // Reset document body
+        document.body.innerHTML = '';
 
-        global.document = document;
-        global.window = window as any;
+        // Mock getBoundingClientRect
+        Object.defineProperty(global.HTMLElement.prototype, 'getBoundingClientRect', {
+            writable: true,
+            value: function() {
+                const style = window.getComputedStyle(this);
+                return {
+                    x: 0,
+                    y: 0,
+                    width: parseFloat(style.width) || 0,
+                    height: parseFloat(style.height) || 0,
+                    top: 0,
+                    left: 0,
+                    right: parseFloat(style.width) || 0,
+                    bottom: parseFloat(style.height) || 0,
+                    toJSON: () => {}
+                };
+            }
+        });
+
+        // Suppress JSDOM not implemented error for pseudo elements
+        const originalConsoleError = console.error;
+        console.error = (...args) => {
+            if (args[0] && args[0].toString().includes('Not implemented: window.getComputedStyle')) return;
+            originalConsoleError(...args);
+        };
+
+        // Mock Range.prototype.getBoundingClientRect
+        global.Range.prototype.getBoundingClientRect = () => ({
+            x: 0,
+            y: 0,
+            width: 10, // Mock non-zero dimensions for text
+            height: 10,
+            top: 0,
+            left: 0,
+            right: 10,
+            bottom: 10,
+            toJSON: () => {}
+        });
+
+        // Mock Range.prototype.getClientRects
+        global.Range.prototype.getClientRects = () => ({
+            item: () => null,
+            length: 0,
+            [Symbol.iterator]: function* () {}
+        }) as any;
     });
 
     describe('Full Conversion Pipeline', () => {
@@ -29,6 +70,7 @@ describe('Integration Tests', () => {
             container.style.height = '200px';
             container.style.backgroundColor = 'rgb(255, 0, 0)';
             container.style.display = 'flex';
+            container.style.flexDirection = 'row';
             container.style.gap = '10px';
 
             const child1 = document.createElement('div');
@@ -66,8 +108,8 @@ describe('Integration Tests', () => {
 
             // Decode
             const decoded = decodeHtfig(htfigData);
-            expect(decoded.layers.length).toBe(1);
-            expect(decoded.viewport.width).toBe(800);
+            expect(decoded.document!.layers.length).toBe(1);
+            expect(decoded.document!.viewport.width).toBe(800);
         });
 
         it('should handle complex nested layouts', async () => {

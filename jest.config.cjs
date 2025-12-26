@@ -4,8 +4,13 @@ module.exports = {
   testEnvironment: 'jsdom',
   roots: ['<rootDir>'],
   transform: {
-    '^.+\.tsx?$': 'ts-jest',
+    '^.+\.tsx?$': ['ts-jest', { useESM: true }],
+    '^.+\.jsx?$': 'babel-jest',
   },
+  transformIgnorePatterns: [
+    "node_modules/(?!parse5|jsdom|whatwg-url)"
+  ],
+  extensionsToTreatAsEsm: ['.ts'],
   moduleNameMapper: {
     // Handle specific aliases if any
   },

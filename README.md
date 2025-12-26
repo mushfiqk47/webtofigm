@@ -12,10 +12,13 @@ A powerful dual-part tool (Chrome Extension + Figma Plugin) that captures live w
 
 - **Pixel-Perfect Capture**: Captures fonts, colors, gradients, shadows, and borders accurately.
 - **Universal Auto Layout**: Automatically converts almost every HTML block (`div`, `section`, etc.) into a **Figma Auto Layout** frame. No more loose rectangles!
+- **Intelligent Auto Layout Sizing**: Smarter detection of `FILL` vs `FIXED` vs `HUG` sizing modes. Properly handles `width: 100%`, `flex-grow`, and explicit dimensions.
 - **Full Page Scroll**: Automatically scrolls the webpage to fetch **lazy-loaded images** and content before capturing.
+- **Fast Parallel Image Processing**: 5-10x faster image loading using parallel processing.
 - **Missing Element Fixes**: Reliably captures explicit `z-index` overlays, sticky navigation bars, and pseudo-elements (icons).
 - **Responsive Sizing**: Imported containers default to "Fill Container", making the designs responsive out-of-the-box.
 - **Smart Image Handling**: Captures high-res images from `srcset` or lazy-load attributes (`data-src`), not just placeholders.
+- **Coordinate System Standardization**: Improved positioning accuracy for complex layouts (e.g., sticky headers, pseudo-elements).
 
 ---
 

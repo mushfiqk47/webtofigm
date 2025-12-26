@@ -1,6 +1,6 @@
 {
   "name": "html-to-figma",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Production-grade HTML to Figma conversion plugin",
   "type": "module",
   "scripts": {
@@ -14,9 +14,12 @@
     "test": "jest"
   },
   "devDependencies": {
+    "@babel/core": "^7.28.5",
+    "@babel/preset-env": "^7.28.5",
     "@figma/plugin-typings": "^1.98.0",
     "@types/jest": "^30.0.0",
     "@types/jsdom": "^27.0.0",
+    "babel-jest": "^30.2.0",
     "concurrently": "^8.2.2",
     "esbuild": "^0.20.0",
     "jest": "^30.2.0",

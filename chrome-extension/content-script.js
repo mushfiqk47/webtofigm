@@ -880,7 +880,6 @@
           await this.processChildren(node, element, depth + 1);
         }
         if (this.shouldPrune(node)) {
-          node.isContentOnly = true;
         }
         if (node.layoutPositioning !== "ABSOLUTE" && !isDocumentRoot) {
           const margins = {
@@ -1001,40 +1000,51 @@
           isHorizontal = !style.gridAutoFlow.includes("column");
         }
         node.layoutMode = isHorizontal ? "HORIZONTAL" : "VERTICAL";
-        const gaps = parseGap(style.gap);
-        if (gaps.row === 0 && style.rowGap && style.rowGap !== "normal")
-          gaps.row = parseFloat(style.rowGap);
-        if (gaps.col === 0 && style.columnGap && style.columnGap !== "normal")
-          gaps.col = parseFloat(style.columnGap);
-        if (node.layoutMode === "HORIZONTAL") {
-          node.itemSpacing = gaps.col;
-          node.counterAxisSpacing = gaps.row;
-        } else {
-          node.itemSpacing = gaps.row;
-          node.counterAxisSpacing = gaps.col;
+        if (isGrid) {
+          const hasComplexRows = style.gridTemplateRows !== "none" && style.gridTemplateRows.split(" ").length > 1;
+          const hasComplexCols = style.gridTemplateColumns !== "none" && style.gridTemplateColumns.split(" ").length > 1;
+          if (hasComplexRows && hasComplexCols) {
+            node.layoutMode = "NONE";
+            node.layoutSizingHorizontal = "FIXED";
+            node.layoutSizingVertical = "FIXED";
+          }
         }
-        const align = style.alignItems;
-        if (align === "flex-start" || align === "start")
-          node.counterAxisAlignItems = "MIN";
-        else if (align === "flex-end" || align === "end")
-          node.counterAxisAlignItems = "MAX";
-        else if (align === "center")
-          node.counterAxisAlignItems = "CENTER";
-        else if (align === "baseline")
-          node.counterAxisAlignItems = "BASELINE";
-        else if (align === "stretch")
-          node.counterAxisAlignItems = "MIN";
-        const justify = style.justifyContent;
-        if (justify === "flex-start" || justify === "start")
-          node.primaryAxisAlignItems = "MIN";
-        else if (justify === "flex-end" || justify === "end")
-          node.primaryAxisAlignItems = "MAX";
-        else if (justify === "center")
-          node.primaryAxisAlignItems = "CENTER";
-        else if (justify === "space-between")
-          node.primaryAxisAlignItems = "SPACE_BETWEEN";
-        if (style.flexWrap === "wrap" || isGrid) {
-          node.layoutWrap = "WRAP";
+        if (node.layoutMode !== "NONE") {
+          const gaps = parseGap(style.gap);
+          if (gaps.row === 0 && style.rowGap && style.rowGap !== "normal")
+            gaps.row = parseFloat(style.rowGap);
+          if (gaps.col === 0 && style.columnGap && style.columnGap !== "normal")
+            gaps.col = parseFloat(style.columnGap);
+          if (node.layoutMode === "HORIZONTAL") {
+            node.itemSpacing = gaps.col;
+            node.counterAxisSpacing = gaps.row;
+          } else {
+            node.itemSpacing = gaps.row;
+            node.counterAxisSpacing = gaps.col;
+          }
+          const align = style.alignItems;
+          if (align === "flex-start" || align === "start")
+            node.counterAxisAlignItems = "MIN";
+          else if (align === "flex-end" || align === "end")
+            node.counterAxisAlignItems = "MAX";
+          else if (align === "center")
+            node.counterAxisAlignItems = "CENTER";
+          else if (align === "baseline")
+            node.counterAxisAlignItems = "BASELINE";
+          else if (align === "stretch")
+            node.counterAxisAlignItems = "MIN";
+          const justify = style.justifyContent;
+          if (justify === "flex-start" || justify === "start")
+            node.primaryAxisAlignItems = "MIN";
+          else if (justify === "flex-end" || justify === "end")
+            node.primaryAxisAlignItems = "MAX";
+          else if (justify === "center")
+            node.primaryAxisAlignItems = "CENTER";
+          else if (justify === "space-between")
+            node.primaryAxisAlignItems = "SPACE_BETWEEN";
+          if (style.flexWrap === "wrap" || isGrid) {
+            node.layoutWrap = "WRAP";
+          }
         }
         const hasExplicitWidth = style.width !== "auto" && style.width !== "" && !style.width.includes("%");
         const isFullWidth = style.width === "100%" || style.width === "100vw" || style.width === "100vi";
@@ -1043,6 +1053,7 @@
           node.layoutSizingHorizontal = "FILL";
         } else if (hasExplicitWidth) {
           node.layoutSizingHorizontal = "FIXED";
+          node.width = element.getBoundingClientRect().width;
         } else {
           node.layoutSizingHorizontal = "HUG";
         }

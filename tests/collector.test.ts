@@ -3,22 +3,62 @@
  * These tests verify core functionality of the HTML-to-Figma conversion
  */
 
+import { TextEncoder, TextDecoder } from 'util';
+global.TextEncoder = TextEncoder as any;
+global.TextDecoder = TextDecoder as any;
+
 import { ContentCollector } from '../src/capture/collector';
-import { JSDOM } from 'jsdom';
 
 describe('ContentCollector', () => {
-    let dom: JSDOM;
-    let document: Document;
-    let window: Window;
-
     beforeEach(() => {
-        dom = new JSDOM('<!DOCTYPE html><html><body></body></html>');
-        document = dom.window.document;
-        window = dom.window as unknown as Window;
+        // Reset document body
+        document.body.innerHTML = '';
 
-        // Mock global window and document
-        global.document = document;
-        global.window = window as any;
+        // Mock getBoundingClientRect
+        Object.defineProperty(global.HTMLElement.prototype, 'getBoundingClientRect', {
+            writable: true,
+            value: function() {
+                const style = window.getComputedStyle(this);
+                return {
+                    x: 0,
+                    y: 0,
+                    width: parseFloat(style.width) || 0,
+                    height: parseFloat(style.height) || 0,
+                    top: 0,
+                    left: 0,
+                    right: parseFloat(style.width) || 0,
+                    bottom: parseFloat(style.height) || 0,
+                    toJSON: () => {}
+                };
+            }
+        });
+
+        // Mock Range.prototype.getBoundingClientRect
+        global.Range.prototype.getBoundingClientRect = () => ({
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 10,
+            top: 0,
+            left: 0,
+            right: 10,
+            bottom: 10,
+            toJSON: () => {}
+        });
+
+        // Mock Range.prototype.getClientRects
+        global.Range.prototype.getClientRects = () => ({
+            item: () => null,
+            length: 0,
+            [Symbol.iterator]: function* () {}
+        }) as any;
+
+        // Suppress JSDOM not implemented error for pseudo elements
+        const originalConsoleError = console.error;
+        console.error = (...args) => {
+            if (args[0] && args[0].toString().includes('Not implemented: window.getComputedStyle')) return;
+            originalConsoleError(...args);
+        };
     });
 
     describe('Basic Element Capture', () => {
