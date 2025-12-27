@@ -864,6 +864,8 @@
             await this.handlePicture(node, element);
           } else if (tagName === "IFRAME") {
             await this.handleIframe(node, element);
+          } else if (tagName === "INPUT" || tagName === "TEXTAREA" || tagName === "SELECT") {
+            await this.handleInput(node, element);
           }
         } else if (!isVisible && !isDisplayContents) {
           node.fills = [];
@@ -1459,6 +1461,62 @@
       if (!node.children)
         node.children = [];
       node.children.push(label);
+    }
+    async handleInput(node, element) {
+      let text = "";
+      let isPlaceholder = false;
+      if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+        text = element.value;
+        if (!text && element.placeholder) {
+          text = element.placeholder;
+          isPlaceholder = true;
+        }
+      } else if (element instanceof HTMLSelectElement) {
+        text = element.options[element.selectedIndex]?.text || "";
+      }
+      if (!text)
+        return;
+      const style = window.getComputedStyle(element);
+      const fontSize = parseFloat(style.fontSize);
+      const paddingTop = parseFloat(style.paddingTop) || 0;
+      const paddingLeft = parseFloat(style.paddingLeft) || 0;
+      const paddingRight = parseFloat(style.paddingRight) || 0;
+      const paddingBottom = parseFloat(style.paddingBottom) || 0;
+      const contentX = node.x + paddingLeft;
+      const contentY = node.y + paddingTop;
+      const contentWidth = node.width - paddingLeft - paddingRight;
+      const contentHeight = node.height - paddingTop - paddingBottom;
+      const textNode = {
+        type: "TEXT",
+        name: isPlaceholder ? "Placeholder" : "Value",
+        x: contentX,
+        y: contentY,
+        width: contentWidth,
+        height: contentHeight,
+        // Text node height usually matches content height for inputs
+        text,
+        fontFamily: style.fontFamily.split(",")[0].replace(/['"]/g, ""),
+        fontWeight: style.fontWeight,
+        fontSize,
+        textAlign: "LEFT",
+        // Inputs are usually left-aligned, but check style
+        lineHeight: parseLineHeight(style.lineHeight, fontSize),
+        letterSpacing: parseLetterSpacing(style.letterSpacing, fontSize),
+        textCase: parseTextCase(style.textTransform),
+        fills: await this.resolveTextFills(style)
+      };
+      if (isPlaceholder) {
+        if (textNode.fills && textNode.fills[0] && textNode.fills[0].color) {
+          textNode.fills[0].opacity = (textNode.fills[0].opacity || 1) * 0.6;
+        }
+      }
+      const textAlign = style.textAlign.toUpperCase();
+      if (textAlign === "CENTER" || textAlign === "RIGHT" || textAlign === "JUSTIFY") {
+        textNode.textAlign = textAlign === "JUSTIFY" ? "JUSTIFIED" : textAlign;
+      }
+      if (!node.children)
+        node.children = [];
+      node.children.push(textNode);
     }
     async handlePicture(node, picture) {
       const img = picture.querySelector("img");

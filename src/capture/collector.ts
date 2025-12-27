@@ -191,6 +191,8 @@ export class ContentCollector {
                     await this.handlePicture(node, element as HTMLPictureElement);
                 } else if (tagName === 'IFRAME') {
                     await this.handleIframe(node, element as HTMLIFrameElement);
+                } else if (tagName === 'INPUT' || tagName === 'TEXTAREA' || tagName === 'SELECT') {
+                    await this.handleInput(node, element as HTMLElement);
                 }
             } else if (!isVisible && !isDisplayContents) {
                 // Keep layout info for invisible elements so they take up space
@@ -923,6 +925,84 @@ export class ContentCollector {
         
         if (!node.children) node.children = [];
         node.children.push(label);
+    }
+
+    private async handleInput(node: LayerNode, element: HTMLElement) {
+        let text = '';
+        let isPlaceholder = false;
+
+        if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+            text = element.value;
+            if (!text && element.placeholder) {
+                text = element.placeholder;
+                isPlaceholder = true;
+            }
+        } else if (element instanceof HTMLSelectElement) {
+            text = element.options[element.selectedIndex]?.text || '';
+        }
+
+        if (!text) return;
+
+        const style = window.getComputedStyle(element);
+        const fontSize = parseFloat(style.fontSize);
+
+        // Calculate vertical alignment for text within the input box
+        // Inputs often have padding, we need to respect that.
+        // The parent 'node' (FRAME) already has the bounding box and padding of the input.
+        // We just need to create a text node inside it.
+        // But wait, the 'node' creation in 'collect' already handles padding via 'node.padding'.
+        // Figma text inside an Auto Layout frame (which our inputs effectively are) will be positioned by padding.
+        // However, we are using ABSOLUTE positioning.
+        // So we need to calculate the absolute X/Y of the text.
+
+        // Get padding values again
+        const paddingTop = parseFloat(style.paddingTop) || 0;
+        const paddingLeft = parseFloat(style.paddingLeft) || 0;
+        const paddingRight = parseFloat(style.paddingRight) || 0;
+        const paddingBottom = parseFloat(style.paddingBottom) || 0;
+
+        // Effective content box
+        const contentX = node.x + paddingLeft;
+        const contentY = node.y + paddingTop;
+        const contentWidth = node.width - paddingLeft - paddingRight;
+        const contentHeight = node.height - paddingTop - paddingBottom;
+
+        const textNode: LayerNode = {
+            type: 'TEXT',
+            name: isPlaceholder ? 'Placeholder' : 'Value',
+            x: contentX,
+            y: contentY,
+            width: contentWidth,
+            height: contentHeight, // Text node height usually matches content height for inputs
+            text: text,
+            fontFamily: style.fontFamily.split(',')[0].replace(/['"]/g, ''),
+            fontWeight: style.fontWeight,
+            fontSize: fontSize,
+            textAlign: 'LEFT', // Inputs are usually left-aligned, but check style
+            lineHeight: parseLineHeight(style.lineHeight, fontSize),
+            letterSpacing: parseLetterSpacing(style.letterSpacing, fontSize),
+            textCase: parseTextCase(style.textTransform),
+            fills: await this.resolveTextFills(style)
+        };
+
+        // If placeholder, reduce opacity or change color if possible
+        if (isPlaceholder) {
+            // Placeholder pseudo-element color is hard to get via JS.
+            // Best guess: reduce opacity of the text color
+            if (textNode.fills && textNode.fills[0] && textNode.fills[0].color) {
+                textNode.fills[0].opacity = (textNode.fills[0].opacity || 1) * 0.6;
+            }
+        }
+
+        // Handle Text Align
+        const textAlign = style.textAlign.toUpperCase();
+        if (textAlign === 'CENTER' || textAlign === 'RIGHT' || textAlign === 'JUSTIFY') {
+            textNode.textAlign = textAlign === 'JUSTIFY' ? 'JUSTIFIED' : textAlign as 'CENTER' | 'RIGHT';
+        }
+
+        // Add to children
+        if (!node.children) node.children = [];
+        node.children.push(textNode);
     }
 
     private async handlePicture(node: LayerNode, picture: HTMLPictureElement) {
