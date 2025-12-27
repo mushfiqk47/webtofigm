@@ -862,6 +862,8 @@
             await this.handleCanvas(node, element);
           } else if (tagName === "PICTURE") {
             await this.handlePicture(node, element);
+          } else if (tagName === "IFRAME") {
+            await this.handleIframe(node, element);
           }
         } else if (!isVisible && !isDisplayContents) {
           node.fills = [];
@@ -1421,6 +1423,43 @@
         node.name = "Canvas (Tainted)";
       }
     }
+    async handleIframe(node, iframe) {
+      node.type = "FRAME";
+      node.name = "Iframe";
+      try {
+        const doc = iframe.contentDocument;
+        if (doc && doc.body) {
+          await this.processChildren(node, doc.body, 0);
+          if (node.children && node.children.length > 0) {
+            return;
+          }
+        }
+      } catch (e) {
+        this.addWarning(`Cannot capture cross-origin iframe: ${iframe.src}`);
+      }
+      node.fills = [{
+        type: "SOLID",
+        color: { r: 0.9, g: 0.9, b: 0.9 },
+        opacity: 1
+      }];
+      const label = {
+        type: "TEXT",
+        name: "Label",
+        x: node.x + 10,
+        y: node.y + 10,
+        width: node.width - 20,
+        height: 20,
+        text: `IFRAME: ${iframe.src || "Embedded Content"}`,
+        fontFamily: "Inter",
+        fontSize: 12,
+        fontWeight: "normal",
+        textAlign: "LEFT",
+        fills: [{ type: "SOLID", color: { r: 0.5, g: 0.5, b: 0.5 }, opacity: 1 }]
+      };
+      if (!node.children)
+        node.children = [];
+      node.children.push(label);
+    }
     async handlePicture(node, picture) {
       const img = picture.querySelector("img");
       if (img) {
@@ -1431,7 +1470,14 @@
       }
     }
     async processChildren(node, element, depth) {
-      const childNodes = Array.from(element.childNodes);
+      let childNodes;
+      let rootElement = element;
+      if (element.shadowRoot) {
+        childNodes = Array.from(element.shadowRoot.childNodes);
+        rootElement = element.shadowRoot;
+      } else {
+        childNodes = Array.from(element.childNodes);
+      }
       const collectedChildren = [];
       if (this.shouldStopTraversal(depth))
         return;

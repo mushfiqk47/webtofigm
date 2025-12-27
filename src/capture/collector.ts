@@ -189,6 +189,8 @@ export class ContentCollector {
                     await this.handleCanvas(node, element as HTMLCanvasElement);
                 } else if (tagName === 'PICTURE') {
                     await this.handlePicture(node, element as HTMLPictureElement);
+                } else if (tagName === 'IFRAME') {
+                    await this.handleIframe(node, element as HTMLIFrameElement);
                 }
             } else if (!isVisible && !isDisplayContents) {
                 // Keep layout info for invisible elements so they take up space
@@ -859,6 +861,70 @@ export class ContentCollector {
         }
     }
 
+    private async handleIframe(node: LayerNode, iframe: HTMLIFrameElement) {
+        node.type = 'FRAME';
+        node.name = 'Iframe';
+
+        try {
+            // Try to access content if same-origin
+            const doc = iframe.contentDocument;
+            if (doc && doc.body) {
+                // We can potentially capture the iframe content recursively!
+                // However, we need to adjust coordinates since the iframe has its own coordinate space.
+                // For now, let's treat it as a container and try to collect its body.
+                
+                // Note: deeply recursive iframe capture is complex due to coordinate mapping.
+                // A simple approach is to capture the body as children of this node.
+                // We must reset the 'root' context for coordinates or handle offsets.
+                
+                // LIMITATION: Coordinates in the recursive call will be relative to the iframe's document.
+                // Our Collector uses document-relative coords.
+                // If we recurse, the child nodes will have X/Y relative to iframe 0,0.
+                // When we build in Figma, we need to ensure the Iframe Frame is positioned correctly (it is),
+                // and its children are relative to it.
+                // Since our Builder subtracts parentAbsoluteX/Y, this works out!
+                // IF the iframe node itself is the "Parent" in Figma.
+                
+                // Let's try to collect the body's children.
+                await this.processChildren(node, doc.body, 0); // Reset depth to allow full capture? Or keep depth? Keep depth for safety.
+                
+                // If we successfully captured children, we don't need a placeholder fill.
+                if (node.children && node.children.length > 0) {
+                    return;
+                }
+            }
+        } catch (e) {
+            // Access denied (cross-origin)
+            this.addWarning(`Cannot capture cross-origin iframe: ${iframe.src}`);
+        }
+
+        // Fallback: Visual Placeholder
+        node.fills = [{
+            type: 'SOLID',
+            color: { r: 0.9, g: 0.9, b: 0.9 },
+            opacity: 1
+        }];
+        
+        // Add a text label
+        const label: LayerNode = {
+            type: 'TEXT',
+            name: 'Label',
+            x: node.x + 10,
+            y: node.y + 10,
+            width: node.width - 20,
+            height: 20,
+            text: `IFRAME: ${iframe.src || 'Embedded Content'}`,
+            fontFamily: 'Inter',
+            fontSize: 12,
+            fontWeight: 'normal',
+            textAlign: 'LEFT',
+            fills: [{ type: 'SOLID', color: { r: 0.5, g: 0.5, b: 0.5 }, opacity: 1 }]
+        };
+        
+        if (!node.children) node.children = [];
+        node.children.push(label);
+    }
+
     private async handlePicture(node: LayerNode, picture: HTMLPictureElement) {
         // Picture elements contain img as child, find it
         const img = picture.querySelector('img');
@@ -871,7 +937,24 @@ export class ContentCollector {
     }
 
     private async processChildren(node: LayerNode, element: HTMLElement, depth: number) {
-        const childNodes = Array.from(element.childNodes);
+        // SHADOW DOM SUPPORT
+        // If the element has a shadow root, we must capture that tree instead of light DOM children
+        // (unless we want to handle slots, but for now capturing the shadow root is the priority for Web Components)
+        let childNodes: Node[];
+        let rootElement: Element | DocumentFragment = element;
+
+        if (element.shadowRoot) {
+            // It's a web component or shadow host
+            childNodes = Array.from(element.shadowRoot.childNodes);
+            rootElement = element.shadowRoot;
+            
+            // Note: Pseudo elements (::before/::after) don't apply to the host the same way if shadow root is present,
+            // but the host itself is still an element in the light DOM so it can have them.
+            // We keep the logic for pseudo elements on the HOST 'element'.
+        } else {
+            childNodes = Array.from(element.childNodes);
+        }
+
         const collectedChildren: LayerNode[] = [];
 
         if (this.shouldStopTraversal(depth)) return;
