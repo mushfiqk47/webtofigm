@@ -242,7 +242,7 @@ export class ContentCollector {
     private createMarginWrapper(node: LayerNode, margins: { top: number, right: number, bottom: number, left: number }): LayerNode {
         const wrapper: LayerNode = {
             type: 'FRAME',
-            name: `Margin Wrapper (${node.name})`,
+            name: 'Container',
             x: node.x - margins.left,
             y: node.y - margins.top,
             width: node.width + margins.left + margins.right,
@@ -301,60 +301,108 @@ export class ContentCollector {
         else if (tag === 'IMG') node.semanticType = 'IMAGE';
         else if (tag === 'SECTION' || tag === 'HEADER' || tag === 'FOOTER' || tag === 'NAV' || tag === 'MAIN' || tag === 'ARTICLE' || tag === 'ASIDE') node.semanticType = 'SECTION';
 
-        // 2. Build smart name with priority: aria-label > data-testid > role > id > class > text content
-        let smartName = node.semanticType ? node.semanticType.toLowerCase() : tag.toLowerCase();
-
-        // Check ARIA label first (most semantic)
-        const ariaLabel = element.getAttribute('aria-label');
-        if (ariaLabel) {
-            smartName = ariaLabel.slice(0, 40); // Limit length
-        }
-        // Check data-testid (common in React apps)
-        else if (element.getAttribute('data-testid')) {
-            smartName = element.getAttribute('data-testid')!.replace(/-/g, ' ');
-        }
-        // Check role attribute
-        else if (element.getAttribute('role')) {
-            const role = element.getAttribute('role');
-            if (role && role !== 'presentation' && role !== 'none') {
-                smartName = role;
-            }
-        }
-        // Check ID
-        else if (element.id) {
-            smartName += `#${element.id}`;
-        }
-        // Check first class
-        else if (element.className && typeof element.className === 'string' && element.className.trim()) {
-            const firstClass = element.className.split(' ')[0];
-            if (firstClass && !firstClass.startsWith('_') && firstClass.length < 30) {
-                smartName += `.${firstClass}`;
-            }
-        }
-        // For buttons/links, use text content
-        else if ((tag === 'BUTTON' || tag === 'A') && element.textContent) {
-            const text = element.textContent.trim().slice(0, 25);
-            if (text) smartName = text;
-        }
-
-        node.name = smartName;
+        // 2. Uniform Naming (User Request: "name every layer on figma is container")
+        node.name = 'Container';
     }
 
     private extractLayout(node: LayerNode, style: CSSStyleDeclaration, element: HTMLElement) {
-        // FORCE ABSOLUTE POSITIONING (User Request)
-        // Bypass all Flex/Grid detection to ensure exact visual fidelity via absolute positioning.
+        const display = style.display;
+        const isFlex = display === 'flex' || display === 'inline-flex';
+        const isGrid = display === 'grid' || display === 'inline-grid';
+
+        // Default to ABSOLUTE for safety if not Flex/Grid
         node.layoutMode = 'NONE';
         node.layoutPositioning = 'ABSOLUTE';
-        node.layoutSizingHorizontal = 'FIXED';
-        node.layoutSizingVertical = 'FIXED';
-
-        // Capture padding just in case, though usually ignored in absolute frames without auto-layout
+        
+        // Capture padding
         node.padding = {
             top: parseFloat(style.paddingTop) || 0,
             right: parseFloat(style.paddingRight) || 0,
             bottom: parseFloat(style.paddingBottom) || 0,
             left: parseFloat(style.paddingLeft) || 0,
         };
+
+        if (isFlex) {
+            node.layoutPositioning = 'AUTO';
+            node.layoutMode = style.flexDirection.includes('column') ? 'VERTICAL' : 'HORIZONTAL';
+            
+            // Gap / Spacing
+            const gap = parseGap(style.gap);
+            // Flex gap logic: row-gap for vertical, column-gap for horizontal
+            if (node.layoutMode === 'VERTICAL') {
+                node.itemSpacing = gap.row;
+            } else {
+                node.itemSpacing = gap.col;
+            }
+             
+            // Map Alignment
+            const jc = style.justifyContent;
+            if (jc.includes('center')) node.primaryAxisAlignItems = 'CENTER';
+            else if (jc.includes('end') || jc.includes('flex-end')) node.primaryAxisAlignItems = 'MAX';
+            else if (jc.includes('between')) node.primaryAxisAlignItems = 'SPACE_BETWEEN';
+            else node.primaryAxisAlignItems = 'MIN';
+
+            const ai = style.alignItems;
+            if (ai.includes('center')) node.counterAxisAlignItems = 'CENTER';
+            else if (ai.includes('end') || ai.includes('flex-end')) node.counterAxisAlignItems = 'MAX';
+            else if (ai.includes('baseline')) node.counterAxisAlignItems = 'BASELINE';
+            else node.counterAxisAlignItems = 'MIN';
+
+            // Flex Wrap
+            if (style.flexWrap === 'wrap') {
+                node.layoutWrap = 'WRAP';
+                // When wrapping, the cross-axis spacing is the other gap
+                node.counterAxisSpacing = node.layoutMode === 'VERTICAL' ? gap.col : gap.row;
+                // Figma doesn't fully support 'align-content' the same way, but we can try basic mapping if needed
+                // For now, default behavior is usually sufficient
+            }
+
+        } else if (isGrid) {
+            // Basic Grid Support -> Treat as Horizontal Wrap
+            // This is a simplification, but better than Absolute
+             node.layoutPositioning = 'AUTO';
+             node.layoutMode = 'HORIZONTAL';
+             node.layoutWrap = 'WRAP';
+             
+             const gap = parseGap(style.gap);
+             node.itemSpacing = gap.col;
+             node.counterAxisSpacing = gap.row;
+             
+             node.primaryAxisAlignItems = 'MIN';
+             node.counterAxisAlignItems = 'MIN';
+        }
+
+        // Sizing Mode Inference (Hug vs Fixed)
+        // Heuristic: If style says 'auto' or 'fit-content', we try to HUG.
+        // But we must be careful: 'auto' on a block element means 'fill container' (FIXED/FILL in Figma),
+        // whereas 'auto' on a flex child might mean something else.
+        
+        // Let's rely on computed width vs style width.
+        // If inline style explicitly sets 'width', respect it (FIXED).
+        // If it's 'auto', it depends on context.
+        
+        const styleW = element.style.width;
+        const styleH = element.style.height;
+        
+        // Hug Logic: 'fit-content', 'max-content', or inline-block/flex with no width
+        const isHugW = styleW === 'fit-content' || styleW === 'max-content' || (display.includes('inline') && !styleW);
+        const isHugH = styleH === 'fit-content' || styleH === 'max-content' || (display.includes('inline') && !styleH);
+
+        // Fill Logic: '100%' or 'stretch'
+        const isFillW = styleW === '100%' || style.alignSelf === 'stretch';
+        const isFillH = styleH === '100%' || style.alignSelf === 'stretch';
+
+        if (node.layoutMode === 'HORIZONTAL') {
+            node.layoutSizingHorizontal = isFillW ? 'FILL' : (isHugW ? 'HUG' : 'FIXED');
+            node.layoutSizingVertical = isFillH ? 'FILL' : (isHugH ? 'HUG' : 'FIXED');
+        } else if (node.layoutMode === 'VERTICAL') {
+            node.layoutSizingHorizontal = isFillW ? 'FILL' : (isHugW ? 'HUG' : 'FIXED');
+            node.layoutSizingVertical = isFillH ? 'FILL' : (isHugH ? 'HUG' : 'FIXED');
+        } else {
+            // Absolute Frames
+            node.layoutSizingHorizontal = 'FIXED';
+            node.layoutSizingVertical = 'FIXED';
+        }
     }
 
     private async extractBackgrounds(node: LayerNode, style: CSSStyleDeclaration) {

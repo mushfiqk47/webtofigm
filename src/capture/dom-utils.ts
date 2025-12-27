@@ -8,21 +8,36 @@ const MAX_IMAGE_BYTES = 7_500_000; // ~7.5MB guard to avoid huge blobs/base64
  */
 
 export function isHidden(element: HTMLElement, computedStyle: CSSStyleDeclaration): boolean {
-    if (element.tagName === 'SCRIPT' || element.tagName === 'STYLE' || element.tagName === 'NOSCRIPT' || element.tagName === 'META') {
+    // 1. Tag Check
+    if (['SCRIPT', 'STYLE', 'NOSCRIPT', 'META', 'LINK', 'TITLE'].includes(element.tagName)) {
         return true;
     }
 
+    // 2. Display None
     if (computedStyle.display === 'none') return true;
 
-    // visibility: hidden elements are invisible, but their children might be visible.
-    // We will return false here so they are collected, but we must handle their visual styling
-    // (fills, strokes, etc.) in the collector to ensure they don't render as black boxes.
-    if (computedStyle.visibility === 'hidden') return false;
+    // 3. Visibility Hidden (Strict Mode for "Front Still Image" fidelity)
+    if (computedStyle.visibility === 'hidden' || computedStyle.visibility === 'collapse') return true;
 
-    // Check if dimensions are zero (unless it has overflow: visible or is display: contents)
-    const rect = element.getBoundingClientRect();
-    if (rect.width === 0 && rect.height === 0 && computedStyle.overflow === 'hidden' && computedStyle.display !== 'contents') {
-        return true;
+    // 4. Opacity Zero
+    if (computedStyle.opacity === '0') return true;
+
+    // 5. Zero Dimensions
+    // If it has no size and is not display: contents, checking overflow
+    if (computedStyle.display !== 'contents') {
+        const rect = element.getBoundingClientRect();
+        
+        // Effectively zero size
+        if (rect.width < 0.05 || rect.height < 0.05) {
+             // If overflow is visible, children might be seen even if parent is 0x0.
+             // But if it's hidden/scroll/auto, nothing is seen.
+             if (computedStyle.overflow !== 'visible') {
+                 return true;
+             }
+             
+             // Even if overflow IS visible, if it has no children, it's nothing.
+             if (element.childNodes.length === 0) return true;
+        }
     }
 
     return false;

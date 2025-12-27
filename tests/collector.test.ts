@@ -22,12 +22,12 @@ describe('ContentCollector', () => {
                 return {
                     x: 0,
                     y: 0,
-                    width: parseFloat(style.width) || 0,
-                    height: parseFloat(style.height) || 0,
+                    width: parseFloat(style.width) || 100, // Default to 100 if not set
+                    height: parseFloat(style.height) || 100, // Default to 100 if not set
                     top: 0,
                     left: 0,
-                    right: parseFloat(style.width) || 0,
-                    bottom: parseFloat(style.height) || 0,
+                    right: parseFloat(style.width) || 100,
+                    bottom: parseFloat(style.height) || 100,
                     toJSON: () => {}
                 };
             }

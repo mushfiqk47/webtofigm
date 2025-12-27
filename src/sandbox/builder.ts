@@ -18,14 +18,12 @@ export class Builder {
                     break;
                 case 'IMAGE':
                     figmaNode = figma.createRectangle();
-                    figmaNode.name = node.name || 'Image';
                     await this.prepareImageFills(node); // Convert Base64 to Hash
                     break;
                 case 'SVG':
                     if (node.svgContent) {
                         try {
                             figmaNode = figma.createNodeFromSvg(node.svgContent);
-                            figmaNode.name = node.name || 'SVG';
                         } catch (e) {
                             this.warn(`Failed to create SVG (${node.name || 'SVG'}), falling back to frame: ${e instanceof Error ? e.message : String(e)}`);
                             figmaNode = figma.createFrame();
@@ -38,11 +36,6 @@ export class Builder {
                 default:
                     figmaNode = figma.createFrame();
 
-                    // Smart Naming: Use tag name with optional class/id
-                    // Priority: semantic tag > id > class > generic
-                    let layerName = this.getReadableLayerName(node.name);
-                    figmaNode.name = layerName;
-
                     if (node.clipsContent !== undefined) {
                         (figmaNode as FrameNode).clipsContent = node.clipsContent;
                     }
@@ -50,6 +43,9 @@ export class Builder {
             }
 
             if (!figmaNode) return null;
+
+            // FORCE UNIFORM NAMING (User Request)
+            figmaNode.name = 'Container';
 
             // 1. Dimensions & Position (Global <-> Local Translation)
             const globalX = isNaN(node.x) ? 0 : node.x;
@@ -218,7 +214,23 @@ export class Builder {
             }
         }
 
-        textNode.textAutoResize = 'WIDTH_AND_HEIGHT';
+        // Text Resizing Strategy
+        // If text is multiline or has a constrained width, use FIXED_WIDTH (Auto Height)
+        // Otherwise use WIDTH_AND_HEIGHT (Auto Width)
+        
+        // Estimate line height in pixels for heuristic
+        let lhPx = fontSize * 1.2;
+        if (node.lineHeight && node.lineHeight.unit === 'PIXELS') lhPx = node.lineHeight.value;
+        if (node.lineHeight && node.lineHeight.unit === 'PERCENT') lhPx = fontSize * (node.lineHeight.value / 100);
+
+        const isMultiline = node.height > (lhPx * 1.5);
+        
+        if (isMultiline && node.width > 1) {
+             textNode.textAutoResize = 'HEIGHT'; // Fixed Width, grows vertically
+             textNode.resize(node.width, textNode.height);
+        } else {
+             textNode.textAutoResize = 'WIDTH_AND_HEIGHT';
+        }
 
         StyleMapper.apply(node, textNode);
         return textNode;
@@ -307,69 +319,5 @@ export class Builder {
         }
         // If node has fixed W/H but parent is AutoLayout, we might need to set Sizing to FIXED explicitly,
         // but Figma defaults to FIXED usually. We rely on the layoutSizingHorizontal/Vertical set in build().
-    }
-
-    /**
-     * Convert raw node names (tag#id.class) into readable Figma layer names
-     */
-    private getReadableLayerName(rawName: string): string {
-        if (!rawName) return 'Frame';
-
-        // Semantic tag mapping for better readability
-        const tagMap: Record<string, string> = {
-            'div': 'Div',
-            'section': 'Section',
-            'header': 'Header',
-            'footer': 'Footer',
-            'nav': 'Nav',
-            'main': 'Main',
-            'article': 'Article',
-            'aside': 'Aside',
-            'form': 'Form',
-            'button': 'Button',
-            'input': 'Input',
-            'a': 'Link',
-            'ul': 'List',
-            'ol': 'List',
-            'li': 'List Item',
-            'span': 'Span',
-            'p': 'Paragraph',
-            'h1': 'Heading 1',
-            'h2': 'Heading 2',
-            'h3': 'Heading 3',
-            'h4': 'Heading 4',
-            'h5': 'Heading 5',
-            'h6': 'Heading 6',
-            'img': 'Image',
-            'svg': 'Icon',
-            'body': 'Page',
-            'html': 'Document'
-        };
-
-        // Parse the raw name (format: tag#id.class or tag.class or tag#id)
-        const parts = rawName.split(/[#.]/);
-        const tag = parts[0].toLowerCase();
-
-        // Get readable tag name
-        let readableName = tagMap[tag] || this.capitalizeFirst(tag);
-
-        // Check for ID
-        const idMatch = rawName.match(/#([^.]+)/);
-        if (idMatch) {
-            readableName = `${readableName} #${idMatch[1]}`;
-        }
-        // Or check for class (if no ID)
-        else {
-            const classMatch = rawName.match(/\.([^\s#.]+)/);
-            if (classMatch) {
-                readableName = `${readableName} .${classMatch[1]}`;
-            }
-        }
-
-        return readableName;
-    }
-
-    private capitalizeFirst(str: string): string {
-        return str.charAt(0).toUpperCase() + str.slice(1);
     }
 }
