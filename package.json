@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "concurrently \"npm run build:sandbox -- --watch\" \"npm run build:ui -- --watch\" \"npm run build:extension -- --watch\"",
     "build": "npm run build:sandbox && npm run build:ui && npm run build:extension",
-    "build:sandbox": "esbuild src/sandbox/code.ts --bundle --outfile=dist/code.js --target=es2020 --format=esm",
+    "build:sandbox": "esbuild src/sandbox/code.ts --bundle --outfile=dist/code.js --target=es2020 --format=iife --banner:js=\"// Figma Plugin\"",
     "build:ui": "esbuild src/ui/ui.ts --bundle --outfile=dist/ui.js --target=es2020 --format=iife && node scripts/build-ui.js",
     "build:extension": "esbuild chrome-extension/content-script.ts --bundle --outfile=chrome-extension/content-script.js --target=es2020 --format=iife",
     "build:all": "npm run build",
@@ -17,6 +17,7 @@
     "@babel/core": "^7.28.5",
     "@babel/preset-env": "^7.28.5",
     "@figma/plugin-typings": "^1.98.0",
+    "@types/chrome": "^0.1.32",
     "@types/jest": "^30.0.0",
     "@types/jsdom": "^27.0.0",
     "babel-jest": "^30.2.0",

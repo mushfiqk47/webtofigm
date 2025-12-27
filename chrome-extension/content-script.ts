@@ -2,8 +2,6 @@ import { ContentCollector } from '../src/capture/collector';
 import { LayerNode } from '../src/types/layer-node';
 import { encodeHtfig } from '../src/types/file-format';
 
-declare var chrome: any;
-
 console.log('HTML-to-Figma Content Script Loaded');
 
 chrome.runtime.onMessage.addListener((request: any, sender: any, sendResponse: (response: any) => void) => {

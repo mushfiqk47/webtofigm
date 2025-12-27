@@ -33,12 +33,19 @@ const DEFAULT_SETTINGS = {
  */
 async function loadSettings() {
     try {
-        const result = await chrome.storage.local.get('captureSettings');
-        const settings = result.captureSettings || DEFAULT_SETTINGS;
+        if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+            const result = await chrome.storage.local.get('captureSettings');
+            const settings = result.captureSettings || DEFAULT_SETTINGS;
 
-        maxNodesInput.value = settings.maxNodes;
-        maxDepthInput.value = settings.maxDepth;
-        maxDurationInput.value = settings.maxDuration;
+            maxNodesInput.value = settings.maxNodes;
+            maxDepthInput.value = settings.maxDepth;
+            maxDurationInput.value = settings.maxDuration;
+        } else {
+            console.warn('chrome.storage.local is not available. Using default settings.');
+            maxNodesInput.value = DEFAULT_SETTINGS.maxNodes;
+            maxDepthInput.value = DEFAULT_SETTINGS.maxDepth;
+            maxDurationInput.value = DEFAULT_SETTINGS.maxDuration;
+        }
     } catch (error) {
         console.error('Failed to load settings:', error);
     }
@@ -55,7 +62,9 @@ async function saveSettings() {
     };
 
     try {
-        await chrome.storage.local.set({ captureSettings: settings });
+        if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+            await chrome.storage.local.set({ captureSettings: settings });
+        }
     } catch (error) {
         console.error('Failed to save settings:', error);
     }

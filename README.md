@@ -1,24 +1,28 @@
-# HTML to Figma Converter
+# Web to Figma Converter
 
-![HTML to Figma](https://img.shields.io/badge/HTML-Figma-blue) ![Auto Layout](https://img.shields.io/badge/Feature-Auto_Layout-green) ![TypeScript](https://img.shields.io/badge/Language-TypeScript-007ACC)
+![HTML to Figma](https://img.shields.io/badge/Web-Figma-blue) ![Auto Layout](https://img.shields.io/badge/Feature-Auto_Layout-green) ![TypeScript](https://img.shields.io/badge/Language-TypeScript-007ACC)
 
-A powerful dual-part tool (Chrome Extension + Figma Plugin) that captures live web pages and imports them into Figma with **high fidelity** and **editable Auto Layout** structures.
+A production-grade dual-part tool (Chrome Extension + Figma Plugin) that captures live web pages and imports them into Figma with **pixel-perfect fidelity** and **editable Auto Layout** structures.
 
 **Repository:** [https://github.com/mushfiqk47/webtofigm.git](https://github.com/mushfiqk47/webtofigm.git)
 
 ---
 
-## 🚀 Features
+## 🚀 Key Features
 
-- **Pixel-Perfect Capture**: Captures fonts, colors, gradients, shadows, and borders accurately.
-- **Universal Auto Layout**: Automatically converts almost every HTML block (`div`, `section`, etc.) into a **Figma Auto Layout** frame. No more loose rectangles!
-- **Intelligent Auto Layout Sizing**: Smarter detection of `FILL` vs `FIXED` vs `HUG` sizing modes. Properly handles `width: 100%`, `flex-grow`, and explicit dimensions.
-- **Full Page Scroll**: Automatically scrolls the webpage to fetch **lazy-loaded images** and content before capturing.
-- **Fast Parallel Image Processing**: 5-10x faster image loading using parallel processing.
-- **Missing Element Fixes**: Reliably captures explicit `z-index` overlays, sticky navigation bars, and pseudo-elements (icons).
-- **Responsive Sizing**: Imported containers default to "Fill Container", making the designs responsive out-of-the-box.
-- **Smart Image Handling**: Captures high-res images from `srcset` or lazy-load attributes (`data-src`), not just placeholders.
-- **Coordinate System Standardization**: Improved positioning accuracy for complex layouts (e.g., sticky headers, pseudo-elements).
+### 💎 "Mirror Image" Fidelity
+- **Strict Visibility Logic:** The extension intelligently ignores hidden elements (dropdowns, off-screen menus, `opacity: 0` overlays) to capture exactly what you see on the screen. No more "ghost" layers clogging your design.
+- **Pixel-Perfect Styling:** Captures fonts, gradients, shadows (including drop-shadow filters), borders, and images with precision.
+
+### 📐 Intelligent Auto Layout
+- **True Structure:** Converts standard HTML blocks (`div`, `section`) into **Vertical Auto Layouts** and Flex/Grid containers into **Auto Layouts** with correct spacing/alignment.
+- **Smart Sizing:** Automatically infers `FILL`, `FIXED`, and `HUG` sizing modes based on CSS `display`, `width`, and `flex` properties.
+- **Clean Hierarchy:** All structural layers are uniformly named **"Container"** for a professional, distraction-free layer tree.
+
+### ⚡ Performance & Usability
+- **Settings Panel:** Configure capture limits (Max Nodes, Depth, Timeout) directly from the extension popup.
+- **Smart Image Handling:** Captures high-res images from `srcset` or lazy-load attributes (`data-src`) and processes them in parallel.
+- **Modern UI:** Features a sleek "Cosmic Glass" dark mode interface for both the Extension and Plugin.
 
 ---
 
@@ -29,7 +33,7 @@ A powerful dual-part tool (Chrome Extension + Figma Plugin) that captures live w
 - [Figma Desktop App](https://www.figma.com/downloads/)
 
 ### 1. Build the Project
-First, clone the repo and install dependencies:
+Clone the repo and install dependencies:
 
 ```bash
 git clone https://github.com/mushfiqk47/webtofigm.git
@@ -38,7 +42,9 @@ npm install
 npm run build
 ```
 
-This command builds both the **Chrome Extension** (`dist/extension`) and the **Figma Plugin** (`dist/plugin`).
+This generates:
+- **Chrome Extension:** `chrome-extension/content-script.js` (and resources)
+- **Figma Plugin:** `dist/code.js` and `dist/ui.js`
 
 ---
 
@@ -46,8 +52,8 @@ This command builds both the **Chrome Extension** (`dist/extension`) and the **F
 1.  Open Chrome and go to `chrome://extensions`.
 2.  Enable **Developer Mode** (top right toggle).
 3.  Click **Load unpacked**.
-4.  Select the `dist/extension` folder (or `chrome-extension` folder depending on build output).
-5.  Pin the "HTML to Figma" extension to your toolbar.
+4.  Select the `chrome-extension` folder in this project.
+5.  Pin the "Web to Figma" extension to your toolbar.
 
 ### 3. Setup Figma Plugin
 1.  Open Figma Desktop App.
@@ -60,38 +66,38 @@ This command builds both the **Chrome Extension** (`dist/extension`) and the **F
 ## 📖 How to Use
 
 ### Step 1: Capture a Website
-1.  Navigate to any website you want to copy (e.g., `https://stripe.com`).
-2.  Click the **HTML to Figma** extension icon in Chrome.
-3.  Click **"Capture Page"**.
-4.  Wait a moment—invalid lazy content? The page will **automatically scroll** to the bottom and back to ensure everything is loaded.
-5.  A `.htfig` file will automatically download (e.g., `stripe-com-123456.htfig`).
+1.  Navigate to any website (e.g., `https://stripe.com`).
+2.  Click the **Web to Figma** extension icon.
+3.  (Optional) Expand **Advanced Settings** to tune capture limits.
+4.  Click **"Capture Page"**.
+5.  The page will automatically scroll to trigger lazy-loaded assets.
+6.  A `.htfig` file will download automatically.
 
 ### Step 2: Import to Figma
 1.  Open a Figma design file.
 2.  Right-click > **Plugins** > **HTML to Figma**.
-3.  Drag and drop the downloaded `.htfig` file into the plugin window.
-4.  **Done!** The website is now fully editable in Figma with Auto Layouts.
+3.  Drag and drop the `.htfig` file into the plugin's upload zone.
+4.  Click **"Import to Figma"**.
+5.  Watch as your website is reconstructed with full Auto Layouts!
 
 ---
 
 ## 💻 Development
 
 ### Project Structure
-- `chrome-extension/`: Source code for the browser capture logic (Content Script).
-- `src/`: Source code for the Figma plugin logic.
-    - `capture/`: Logic for traversing the DOM and extracting styles (shared code).
-    - `sandbox/`: The main Figma thread logic (Builder, Layout Mapper).
+- `chrome-extension/`: Browser extension source (Popup UI, Content Script).
+- `src/`: Figma Plugin source.
+    - `capture/`: Shared logic for DOM traversal and style extraction (The "Brain").
+    - `sandbox/`: Figma main thread logic (Builder, Node generation).
     - `translator/`: Mappers for CSS to Figma properties.
-    - `ui/`: React/HTML code for the plugin UI.
+    - `ui/`: Plugin UI (React/HTML).
 
 ### Commands
 - `npm run build`: Compiles everything.
-- `npm run watch`: Watches for changes and rebuilds automatically (useful for dev).
+- `npm run watch`: Watches for changes and rebuilds automatically.
+- `npm test`: Runs the full integration test suite.
 
 ---
-
-## 🤝 Contributing
-Pull requests are welcome! For major changes, please open an issue first to discuss what you would like to change.
 
 ## 📄 License
 [MIT](LICENSE)

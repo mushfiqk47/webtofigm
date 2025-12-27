@@ -5,7 +5,8 @@
     "description": "Capture any website and export to Figma with pixel-perfect accuracy",
     "permissions": [
         "activeTab",
-        "scripting"
+        "scripting",
+        "storage"
     ],
     "host_permissions": [
         "<all_urls>"

@@ -4,16 +4,51 @@
   var IMAGE_TIMEOUT_MS = 8e4;
   var MAX_IMAGE_BYTES = 75e5;
   function isHidden(element, computedStyle) {
-    if (element.tagName === "SCRIPT" || element.tagName === "STYLE" || element.tagName === "NOSCRIPT" || element.tagName === "META") {
+    if (["SCRIPT", "STYLE", "NOSCRIPT", "META", "LINK", "TITLE"].includes(element.tagName)) {
       return true;
     }
     if (computedStyle.display === "none")
       return true;
-    if (computedStyle.visibility === "hidden")
-      return false;
-    const rect = element.getBoundingClientRect();
-    if (rect.width === 0 && rect.height === 0 && computedStyle.overflow === "hidden" && computedStyle.display !== "contents") {
+    if (computedStyle.visibility === "hidden" || computedStyle.visibility === "collapse")
       return true;
+    if (computedStyle.opacity === "0")
+      return true;
+    if (computedStyle.transform !== "none") {
+      if (computedStyle.transform.includes("matrix") && computedStyle.transform.startsWith("matrix(0, 0, 0, 0"))
+        return true;
+      if (computedStyle.transform.includes("scale(0)"))
+        return true;
+    }
+    if (computedStyle.overflow !== "visible") {
+      const maxH = parseFloat(computedStyle.maxHeight);
+      const maxW = parseFloat(computedStyle.maxWidth);
+      if (maxH === 0 || maxW === 0)
+        return true;
+    }
+    if (computedStyle.clip === "rect(0px, 0px, 0px, 0px)" || computedStyle.clip === "rect(0 0 0 0)")
+      return true;
+    if (computedStyle.clipPath !== "none") {
+      if (computedStyle.clipPath.includes("inset(100%)"))
+        return true;
+      if (computedStyle.clipPath.includes("circle(0"))
+        return true;
+    }
+    if (computedStyle.display !== "contents") {
+      const rect = element.getBoundingClientRect();
+      if (rect.width < 0.05 || rect.height < 0.05) {
+        if (computedStyle.overflow !== "visible") {
+          return true;
+        }
+        if (element.childNodes.length === 0)
+          return true;
+      }
+      if (rect.right < 0 || rect.bottom < 0)
+        return true;
+    }
+    if (computedStyle.zIndex !== "auto") {
+      const z = parseInt(computedStyle.zIndex);
+      if (z < 0)
+        return true;
     }
     return false;
   }
@@ -225,6 +260,14 @@
     if (clean.length === 0)
       return null;
     return clean;
+  }
+  function parseGap(gap) {
+    if (!gap || gap === "normal")
+      return { row: 0, col: 0 };
+    const parts = gap.trim().split(/\s+/);
+    const row = parseFloat(parts[0]) || 0;
+    const col = parts.length > 1 ? parseFloat(parts[1]) : row;
+    return { row, col };
   }
   function parseGradient(bgString) {
     try {
@@ -897,7 +940,7 @@
     createMarginWrapper(node, margins) {
       const wrapper = {
         type: "FRAME",
-        name: `Margin Wrapper (${node.name})`,
+        name: "Container",
         x: node.x - margins.left,
         y: node.y - margins.top,
         width: node.width + margins.left + margins.right,
@@ -953,42 +996,95 @@
         node.semanticType = "IMAGE";
       else if (tag === "SECTION" || tag === "HEADER" || tag === "FOOTER" || tag === "NAV" || tag === "MAIN" || tag === "ARTICLE" || tag === "ASIDE")
         node.semanticType = "SECTION";
-      let smartName = node.semanticType ? node.semanticType.toLowerCase() : tag.toLowerCase();
-      const ariaLabel = element.getAttribute("aria-label");
-      if (ariaLabel) {
-        smartName = ariaLabel.slice(0, 40);
-      } else if (element.getAttribute("data-testid")) {
-        smartName = element.getAttribute("data-testid").replace(/-/g, " ");
-      } else if (element.getAttribute("role")) {
-        const role = element.getAttribute("role");
-        if (role && role !== "presentation" && role !== "none") {
-          smartName = role;
-        }
-      } else if (element.id) {
-        smartName += `#${element.id}`;
-      } else if (element.className && typeof element.className === "string" && element.className.trim()) {
-        const firstClass = element.className.split(" ")[0];
-        if (firstClass && !firstClass.startsWith("_") && firstClass.length < 30) {
-          smartName += `.${firstClass}`;
-        }
-      } else if ((tag === "BUTTON" || tag === "A") && element.textContent) {
-        const text = element.textContent.trim().slice(0, 25);
-        if (text)
-          smartName = text;
-      }
-      node.name = smartName;
+      node.name = "Container";
     }
     extractLayout(node, style, element) {
-      node.layoutMode = "NONE";
-      node.layoutPositioning = "ABSOLUTE";
-      node.layoutSizingHorizontal = "FIXED";
-      node.layoutSizingVertical = "FIXED";
+      const display = style.display;
+      const pos = style.position;
+      const isAbsolute = pos === "absolute" || pos === "fixed";
+      const isFlex = display === "flex" || display === "inline-flex";
+      const isGrid = display === "grid" || display === "inline-grid";
+      const isBlock = display === "block" || display === "list-item";
+      node.layoutPositioning = isAbsolute ? "ABSOLUTE" : "AUTO";
       node.padding = {
         top: parseFloat(style.paddingTop) || 0,
         right: parseFloat(style.paddingRight) || 0,
         bottom: parseFloat(style.paddingBottom) || 0,
         left: parseFloat(style.paddingLeft) || 0
       };
+      if (isFlex) {
+        node.layoutMode = style.flexDirection.includes("column") ? "VERTICAL" : "HORIZONTAL";
+        const gap = parseGap(style.gap);
+        node.itemSpacing = node.layoutMode === "VERTICAL" ? gap.row : gap.col;
+        const jc = style.justifyContent;
+        if (jc.includes("center"))
+          node.primaryAxisAlignItems = "CENTER";
+        else if (jc.includes("end") || jc.includes("flex-end"))
+          node.primaryAxisAlignItems = "MAX";
+        else if (jc.includes("between"))
+          node.primaryAxisAlignItems = "SPACE_BETWEEN";
+        else
+          node.primaryAxisAlignItems = "MIN";
+        const ai = style.alignItems;
+        if (ai.includes("center"))
+          node.counterAxisAlignItems = "CENTER";
+        else if (ai.includes("end") || ai.includes("flex-end"))
+          node.counterAxisAlignItems = "MAX";
+        else if (ai.includes("baseline"))
+          node.counterAxisAlignItems = "BASELINE";
+        else
+          node.counterAxisAlignItems = "MIN";
+        if (style.flexWrap === "wrap") {
+          node.layoutWrap = "WRAP";
+          node.counterAxisSpacing = node.layoutMode === "VERTICAL" ? gap.col : gap.row;
+        }
+      } else if (isGrid) {
+        node.layoutMode = "HORIZONTAL";
+        node.layoutWrap = "WRAP";
+        const gap = parseGap(style.gap);
+        node.itemSpacing = gap.col;
+        node.counterAxisSpacing = gap.row;
+        node.primaryAxisAlignItems = "MIN";
+        node.counterAxisAlignItems = "MIN";
+      } else if (isBlock && !isAbsolute) {
+        node.layoutMode = "VERTICAL";
+        node.itemSpacing = 0;
+        node.primaryAxisAlignItems = "MIN";
+        node.counterAxisAlignItems = "MIN";
+      } else {
+        node.layoutMode = "NONE";
+      }
+      const styleW = element.style.width;
+      const styleH = element.style.height;
+      const isContentSizedW = styleW === "fit-content" || styleW === "max-content" || styleW === "auto";
+      const isContentSizedH = styleH === "fit-content" || styleH === "max-content" || styleH === "auto";
+      let hSizing = "FIXED";
+      let vSizing = "FIXED";
+      if (isFlex || isGrid) {
+        hSizing = display.includes("inline") ? "HUG" : "FILL";
+        vSizing = "HUG";
+      } else if (isBlock) {
+        hSizing = "FILL";
+        vSizing = "HUG";
+      }
+      if (styleW && styleW !== "auto" && !styleW.includes("%"))
+        hSizing = "FIXED";
+      if (styleH && styleH !== "auto" && !styleH.includes("%"))
+        vSizing = "FIXED";
+      if (styleW?.includes("%"))
+        hSizing = "FILL";
+      if (styleH?.includes("%"))
+        vSizing = "FILL";
+      if (node.layoutMode === "HORIZONTAL") {
+        node.layoutSizingHorizontal = hSizing;
+        node.layoutSizingVertical = vSizing;
+      } else if (node.layoutMode === "VERTICAL") {
+        node.layoutSizingHorizontal = hSizing;
+        node.layoutSizingVertical = vSizing;
+      } else {
+        node.layoutSizingHorizontal = "FIXED";
+        node.layoutSizingVertical = "FIXED";
+      }
     }
     async extractBackgrounds(node, style) {
       const color = parseColor(style.backgroundColor);
@@ -1528,6 +1624,7 @@
       }
     }
     async processChildren(node, element, depth) {
+      const style = window.getComputedStyle(element);
       let childNodes;
       let rootElement = element;
       if (element.shadowRoot) {
@@ -1569,6 +1666,9 @@
       if (afterNode)
         collectedChildren.push(afterNode);
       this.sortChildrenByZIndex(collectedChildren);
+      if (style.flexDirection === "row-reverse" || style.flexDirection === "column-reverse") {
+        collectedChildren.reverse();
+      }
       if (!node.children)
         node.children = [];
       node.children.push(...collectedChildren);

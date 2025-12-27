@@ -22,7 +22,29 @@ export function isHidden(element: HTMLElement, computedStyle: CSSStyleDeclaratio
     // 4. Opacity Zero
     if (computedStyle.opacity === '0') return true;
 
-    // 5. Zero Dimensions
+    // 5. Transform Scale(0)
+    if (computedStyle.transform !== 'none') {
+        // Simple regex to catch scale(0) or matrix with 0 scale
+        if (computedStyle.transform.includes('matrix') && computedStyle.transform.startsWith('matrix(0, 0, 0, 0')) return true;
+        if (computedStyle.transform.includes('scale(0)')) return true;
+    }
+
+    // 6. Max Dimensions Zero (Common for Dropdowns)
+    if (computedStyle.overflow !== 'visible') {
+        const maxH = parseFloat(computedStyle.maxHeight);
+        const maxW = parseFloat(computedStyle.maxWidth);
+        if (maxH === 0 || maxW === 0) return true;
+    }
+
+    // 7. Clipping
+    if (computedStyle.clip === 'rect(0px, 0px, 0px, 0px)' || computedStyle.clip === 'rect(0 0 0 0)') return true;
+    if (computedStyle.clipPath !== 'none') {
+        // Heuristic: inset(100%) or circle(0) etc.
+        if (computedStyle.clipPath.includes('inset(100%)')) return true;
+        if (computedStyle.clipPath.includes('circle(0')) return true;
+    }
+
+    // 8. Geometry & Off-screen
     // If it has no size and is not display: contents, checking overflow
     if (computedStyle.display !== 'contents') {
         const rect = element.getBoundingClientRect();
@@ -30,14 +52,25 @@ export function isHidden(element: HTMLElement, computedStyle: CSSStyleDeclaratio
         // Effectively zero size
         if (rect.width < 0.05 || rect.height < 0.05) {
              // If overflow is visible, children might be seen even if parent is 0x0.
-             // But if it's hidden/scroll/auto, nothing is seen.
              if (computedStyle.overflow !== 'visible') {
                  return true;
              }
-             
              // Even if overflow IS visible, if it has no children, it's nothing.
              if (element.childNodes.length === 0) return true;
         }
+
+        // Off-screen Check (Completely above or to the left of viewport)
+        // Note: We don't cull 'below' or 'right' because we want the full scrollable page.
+        // But things at -9999px are definitely hidden hacky content.
+        if (rect.right < 0 || rect.bottom < 0) return true;
+    }
+
+    // 9. Negative Z-Index (Heuristic)
+    // Often used for background hacks or hidden overlays. 
+    // If z-index is negative, it's behind the root stacking context (usually body background).
+    if (computedStyle.zIndex !== 'auto') {
+        const z = parseInt(computedStyle.zIndex);
+        if (z < 0) return true; 
     }
 
     return false;

@@ -307,14 +307,17 @@ export class ContentCollector {
 
     private extractLayout(node: LayerNode, style: CSSStyleDeclaration, element: HTMLElement) {
         const display = style.display;
+        const pos = style.position;
+        const isAbsolute = pos === 'absolute' || pos === 'fixed';
         const isFlex = display === 'flex' || display === 'inline-flex';
         const isGrid = display === 'grid' || display === 'inline-grid';
+        // Treat standard block elements as Vertical Auto Layout
+        const isBlock = display === 'block' || display === 'list-item';
 
-        // Default to ABSOLUTE for safety if not Flex/Grid
-        node.layoutMode = 'NONE';
-        node.layoutPositioning = 'ABSOLUTE';
-        
-        // Capture padding
+        // 1. Positioning Strategy
+        node.layoutPositioning = isAbsolute ? 'ABSOLUTE' : 'AUTO';
+
+        // 2. Padding
         node.padding = {
             top: parseFloat(style.paddingTop) || 0,
             right: parseFloat(style.paddingRight) || 0,
@@ -322,20 +325,14 @@ export class ContentCollector {
             left: parseFloat(style.paddingLeft) || 0,
         };
 
+        // 3. Layout Mode
         if (isFlex) {
-            node.layoutPositioning = 'AUTO';
             node.layoutMode = style.flexDirection.includes('column') ? 'VERTICAL' : 'HORIZONTAL';
             
-            // Gap / Spacing
             const gap = parseGap(style.gap);
-            // Flex gap logic: row-gap for vertical, column-gap for horizontal
-            if (node.layoutMode === 'VERTICAL') {
-                node.itemSpacing = gap.row;
-            } else {
-                node.itemSpacing = gap.col;
-            }
+            node.itemSpacing = node.layoutMode === 'VERTICAL' ? gap.row : gap.col;
              
-            // Map Alignment
+            // Flex Alignments
             const jc = style.justifyContent;
             if (jc.includes('center')) node.primaryAxisAlignItems = 'CENTER';
             else if (jc.includes('end') || jc.includes('flex-end')) node.primaryAxisAlignItems = 'MAX';
@@ -348,19 +345,14 @@ export class ContentCollector {
             else if (ai.includes('baseline')) node.counterAxisAlignItems = 'BASELINE';
             else node.counterAxisAlignItems = 'MIN';
 
-            // Flex Wrap
+            // Wrap
             if (style.flexWrap === 'wrap') {
                 node.layoutWrap = 'WRAP';
-                // When wrapping, the cross-axis spacing is the other gap
                 node.counterAxisSpacing = node.layoutMode === 'VERTICAL' ? gap.col : gap.row;
-                // Figma doesn't fully support 'align-content' the same way, but we can try basic mapping if needed
-                // For now, default behavior is usually sufficient
             }
 
         } else if (isGrid) {
-            // Basic Grid Support -> Treat as Horizontal Wrap
-            // This is a simplification, but better than Absolute
-             node.layoutPositioning = 'AUTO';
+            // Grid -> Horizontal Wrap
              node.layoutMode = 'HORIZONTAL';
              node.layoutWrap = 'WRAP';
              
@@ -370,36 +362,59 @@ export class ContentCollector {
              
              node.primaryAxisAlignItems = 'MIN';
              node.counterAxisAlignItems = 'MIN';
+
+        } else if (isBlock && !isAbsolute) {
+             // Block Flow -> Vertical Stack
+             node.layoutMode = 'VERTICAL';
+             node.itemSpacing = 0; // Block elements stack with 0 gap (margins handled by wrapper)
+             node.primaryAxisAlignItems = 'MIN';
+             node.counterAxisAlignItems = 'MIN'; // Default left align
+        } else {
+             // Fallback for others (inline, table, etc.) or Absolute
+             node.layoutMode = 'NONE';
         }
 
-        // Sizing Mode Inference (Hug vs Fixed)
-        // Heuristic: If style says 'auto' or 'fit-content', we try to HUG.
-        // But we must be careful: 'auto' on a block element means 'fill container' (FIXED/FILL in Figma),
-        // whereas 'auto' on a flex child might mean something else.
-        
-        // Let's rely on computed width vs style width.
-        // If inline style explicitly sets 'width', respect it (FIXED).
-        // If it's 'auto', it depends on context.
-        
+        // 4. Sizing Inference
+        // Check explicit styles
         const styleW = element.style.width;
         const styleH = element.style.height;
         
-        // Hug Logic: 'fit-content', 'max-content', or inline-block/flex with no width
-        const isHugW = styleW === 'fit-content' || styleW === 'max-content' || (display.includes('inline') && !styleW);
-        const isHugH = styleH === 'fit-content' || styleH === 'max-content' || (display.includes('inline') && !styleH);
+        // Helper to check if size is determined by content
+        const isContentSizedW = styleW === 'fit-content' || styleW === 'max-content' || styleW === 'auto';
+        const isContentSizedH = styleH === 'fit-content' || styleH === 'max-content' || styleH === 'auto';
 
-        // Fill Logic: '100%' or 'stretch'
-        const isFillW = styleW === '100%' || style.alignSelf === 'stretch';
-        const isFillH = styleH === '100%' || style.alignSelf === 'stretch';
+        // Default assumptions based on display type
+        let hSizing: 'FIXED' | 'HUG' | 'FILL' = 'FIXED';
+        let vSizing: 'FIXED' | 'HUG' | 'FILL' = 'FIXED';
 
+        if (isFlex || isGrid) {
+            // Flex Containers usually behave like blocks (FILL width) unless inline-flex (HUG width)
+            hSizing = display.includes('inline') ? 'HUG' : 'FILL';
+            // Height is usually HUG unless fixed
+            vSizing = 'HUG';
+        } else if (isBlock) {
+             // Blocks FILL width and HUG height by default
+             hSizing = 'FILL';
+             vSizing = 'HUG';
+        }
+
+        // Overrides based on explicit styles
+        if (styleW && styleW !== 'auto' && !styleW.includes('%')) hSizing = 'FIXED';
+        if (styleH && styleH !== 'auto' && !styleH.includes('%')) vSizing = 'FIXED';
+        
+        // Percentage often means FILL (relative to parent)
+        if (styleW?.includes('%')) hSizing = 'FILL';
+        if (styleH?.includes('%')) vSizing = 'FILL';
+
+        // Apply to Node
         if (node.layoutMode === 'HORIZONTAL') {
-            node.layoutSizingHorizontal = isFillW ? 'FILL' : (isHugW ? 'HUG' : 'FIXED');
-            node.layoutSizingVertical = isFillH ? 'FILL' : (isHugH ? 'HUG' : 'FIXED');
+            node.layoutSizingHorizontal = hSizing;
+            node.layoutSizingVertical = vSizing;
         } else if (node.layoutMode === 'VERTICAL') {
-            node.layoutSizingHorizontal = isFillW ? 'FILL' : (isHugW ? 'HUG' : 'FIXED');
-            node.layoutSizingVertical = isFillH ? 'FILL' : (isHugH ? 'HUG' : 'FIXED');
+            node.layoutSizingHorizontal = hSizing; // Cross axis for vertical is Horizontal
+            node.layoutSizingVertical = vSizing;   // Primary axis for vertical is Vertical
         } else {
-            // Absolute Frames
+            // Absolute frames
             node.layoutSizingHorizontal = 'FIXED';
             node.layoutSizingVertical = 'FIXED';
         }
@@ -1065,6 +1080,9 @@ export class ContentCollector {
     }
 
     private async processChildren(node: LayerNode, element: HTMLElement, depth: number) {
+        // Retrieve style for flex direction check
+        const style = window.getComputedStyle(element);
+
         // SHADOW DOM SUPPORT
         // If the element has a shadow root, we must capture that tree instead of light DOM children
         // (unless we want to handle slots, but for now capturing the shadow root is the priority for Web Components)
@@ -1117,6 +1135,11 @@ export class ContentCollector {
 
         // Sort children by stacking order (z-index)
         this.sortChildrenByZIndex(collectedChildren);
+
+        // Handle Flex Reverse direction
+        if (style.flexDirection === 'row-reverse' || style.flexDirection === 'column-reverse') {
+            collectedChildren.reverse();
+        }
 
         if (!node.children) node.children = [];
         node.children.push(...collectedChildren);
