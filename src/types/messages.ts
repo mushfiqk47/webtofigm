@@ -7,7 +7,7 @@ export type PluginMessage =
     | { type: 'CONVERSION-COMPLETE' };
 
 export type UIAction =
-    | { type: 'generate'; data: LayerNode[] }
+    | { type: 'generate'; data: LayerNode[]; enableAutoLayout?: boolean }
     | { type: 'status'; message: string }
     | { type: 'complete'; message: string }
     | { type: 'error'; message: string }

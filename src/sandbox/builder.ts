@@ -6,10 +6,18 @@ import { FontLoader } from './font-loader';
 
 export class Builder {
 
-    constructor(private warn: (message: string) => void = () => { }) { }
+    constructor(
+        private warn: (message: string) => void = () => { },
+        private enableAutoLayout: boolean = true
+    ) { }
 
     async build(node: LayerNode, isRootNode: boolean = true, parentAbsoluteX: number = 0, parentAbsoluteY: number = 0): Promise<SceneNode | null> {
         try {
+            // Disable Auto Layout if requested
+            if (!this.enableAutoLayout && node.type === 'FRAME') {
+                node.layoutMode = 'NONE';
+            }
+
             let figmaNode: SceneNode;
 
             switch (node.type) {

@@ -10,11 +10,13 @@ figma.ui.onmessage = async (msg: UIAction) => {
 
     if (msg.type === 'generate') {
         const nodes = msg.data;
+        const enableAutoLayout = msg.enableAutoLayout !== undefined ? msg.enableAutoLayout : true;
+        
         postStatus(`Building ${nodes.length} layers...`);
 
         const builder = new Builder((warning) => {
             figma.ui.postMessage({ type: 'warning', message: warning });
-        });
+        }, enableAutoLayout);
         const createdNodes: SceneNode[] = [];
 
         // Batch Processing Configuration

@@ -291,11 +291,15 @@ class UIManager {
             this.importBtnText.textContent = 'Importing...';
         }
 
+        // Get Options
+        const enableAutoLayout = (document.getElementById('chk-autolayout') as HTMLInputElement)?.checked ?? true;
+
         // Send layers to Figma sandbox
         parent.postMessage({
             pluginMessage: {
                 type: 'generate',
-                data: this.parsedDocument.layers
+                data: this.parsedDocument.layers,
+                enableAutoLayout: enableAutoLayout
             }
         }, '*');
     }
