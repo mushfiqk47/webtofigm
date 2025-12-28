@@ -308,16 +308,35 @@ export class Builder {
     }
 
     private applyChildLayout(node: LayerNode, figmaNode: LayoutMixin) {
-        if (node.layoutGrow !== undefined) {
+        if (node.layoutGrow !== undefined && node.layoutGrow > 0) {
             figmaNode.layoutGrow = node.layoutGrow;
+            // Figma Rule: If grow > 0, primary axis sizing MUST be FILL (0)
+            // But we can't set sizing mode on a child directly via simple property for axis?
+            // Actually, setting layoutGrow automatically toggles the sizing mode in Figma UI,
+            // but in API we usually just set layoutGrow. 
+            // However, to be safe for "Fill Container" behavior:
+            // FrameNode/InstanceNode have primaryAxisSizingMode, but that's for THEIR children.
+            // The sizing of THIS node inside its parent is determined by layoutGrow.
+            // So layoutGrow = 1 is equivalent to "Fill Container" on primary axis.
         }
+        
         if (node.layoutAlign) {
-            figmaNode.layoutAlign = node.layoutAlign;
+            if (node.layoutAlign === 'STRETCH') {
+                figmaNode.layoutAlign = 'STRETCH';
+                // STRETCH means "Fill Container" on counter axis
+            } else if (node.layoutAlign === 'CENTER') {
+                figmaNode.layoutAlign = 'CENTER';
+            } else if (node.layoutAlign === 'MIN') {
+                figmaNode.layoutAlign = 'MIN';
+            } else if (node.layoutAlign === 'MAX') {
+                figmaNode.layoutAlign = 'MAX';
+            } else if (node.layoutAlign === 'INHERIT') {
+                figmaNode.layoutAlign = 'INHERIT';
+            }
         }
+
         if (node.layoutPositioning === 'ABSOLUTE') {
             figmaNode.layoutPositioning = 'ABSOLUTE';
         }
-        // If node has fixed W/H but parent is AutoLayout, we might need to set Sizing to FIXED explicitly,
-        // but Figma defaults to FIXED usually. We rely on the layoutSizingHorizontal/Vertical set in build().
     }
 }

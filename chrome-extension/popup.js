@@ -23,9 +23,9 @@ let isCapturing = false;
 
 // Default settings
 const DEFAULT_SETTINGS = {
-    maxNodes: 15000,
+    maxNodes: 30000,
     maxDepth: 50,
-    maxDuration: 60
+    maxDuration: 90
 };
 
 /**

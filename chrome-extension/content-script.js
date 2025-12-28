@@ -4,6 +4,9 @@
   var IMAGE_TIMEOUT_MS = 8e4;
   var MAX_IMAGE_BYTES = 75e5;
   function isHidden(element, computedStyle) {
+    if (element === document.documentElement || element === document.body) {
+      return false;
+    }
     if (["SCRIPT", "STYLE", "NOSCRIPT", "META", "LINK", "TITLE"].includes(element.tagName)) {
       return true;
     }
@@ -43,11 +46,6 @@
           return true;
       }
       if (rect.right < 0 || rect.bottom < 0)
-        return true;
-    }
-    if (computedStyle.zIndex !== "auto") {
-      const z = parseInt(computedStyle.zIndex);
-      if (z < 0)
         return true;
     }
     return false;
@@ -804,6 +802,7 @@
         MAX_DURATION: false
       };
       this.warnings = [];
+      console.log("ContentCollector initialized (v2.1)");
       this.root = root;
       this.enableComponentDetection = options?.detectComponents ?? true;
       this.enableDesignTokens = options?.extractTokens ?? true;
@@ -853,7 +852,12 @@
         if (!this.reserveNode("element", element, depth)) {
           return null;
         }
-        const style = window.getComputedStyle(element);
+        let style;
+        try {
+          style = window.getComputedStyle(element);
+        } catch (e) {
+          return null;
+        }
         if (isHidden(element, style)) {
           return null;
         }
@@ -1056,6 +1060,17 @@
       }
       const styleW = element.style.width;
       const styleH = element.style.height;
+      const flexGrow = parseFloat(style.flexGrow) || 0;
+      const alignSelf = style.alignSelf;
+      node.layoutGrow = flexGrow;
+      if (alignSelf === "stretch")
+        node.layoutAlign = "STRETCH";
+      else if (alignSelf === "center")
+        node.layoutAlign = "CENTER";
+      else if (alignSelf === "flex-start" || alignSelf === "start")
+        node.layoutAlign = "MIN";
+      else if (alignSelf === "flex-end" || alignSelf === "end")
+        node.layoutAlign = "MAX";
       const isContentSizedW = styleW === "fit-content" || styleW === "max-content" || styleW === "auto";
       const isContentSizedH = styleH === "fit-content" || styleH === "max-content" || styleH === "auto";
       let hSizing = "FIXED";

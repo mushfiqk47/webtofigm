@@ -40,6 +40,7 @@ export class ContentCollector {
         maxDepth?: number;
         maxDurationMs?: number;
     }) {
+        console.log('ContentCollector initialized (v2.1)');
         this.root = root;
         this.enableComponentDetection = options?.detectComponents ?? true;
         this.enableDesignTokens = options?.extractTokens ?? true;
@@ -102,7 +103,13 @@ export class ContentCollector {
                 return null;
             }
 
-            const style = window.getComputedStyle(element);
+            // Ensure style is captured immediately
+            let style: CSSStyleDeclaration;
+            try {
+                style = window.getComputedStyle(element);
+            } catch (e) {
+                return null; // Detached element or other error
+            }
 
             if (isHidden(element, style)) {
                 return null;
@@ -378,6 +385,14 @@ export class ContentCollector {
         // Check explicit styles
         const styleW = element.style.width;
         const styleH = element.style.height;
+        const flexGrow = parseFloat(style.flexGrow) || 0;
+        const alignSelf = style.alignSelf;
+
+        node.layoutGrow = flexGrow;
+        if (alignSelf === 'stretch') node.layoutAlign = 'STRETCH';
+        else if (alignSelf === 'center') node.layoutAlign = 'CENTER';
+        else if (alignSelf === 'flex-start' || alignSelf === 'start') node.layoutAlign = 'MIN';
+        else if (alignSelf === 'flex-end' || alignSelf === 'end') node.layoutAlign = 'MAX';
         
         // Helper to check if size is determined by content
         const isContentSizedW = styleW === 'fit-content' || styleW === 'max-content' || styleW === 'auto';
@@ -406,6 +421,39 @@ export class ContentCollector {
         if (styleW?.includes('%')) hSizing = 'FILL';
         if (styleH?.includes('%')) vSizing = 'FILL';
 
+        // Overrides based on Flex/Grid context (Parent's layout dictates child behavior, but we infer from child props)
+        // Note: This logic is applied to the CONTAINER itself.
+        // However, flex-grow applies to the element as a CHILD.
+        // If THIS element has flex-grow, it means it should FILL its PARENT's primary axis.
+        // But we need to know the PARENT's layout mode to know which axis is primary.
+        // We don't have parent context easily here.
+        // BUT: CSS 'width' on a flex item is often ignored if flex-grow is set.
+        
+        // If we detect flex-grow, we can assume it wants to FILL the relevant axis
+        // We'll trust the Builder to apply this to the child in the parent context.
+        // Here we just set the preferred *internal* sizing mode?
+        // No, layoutSizingHorizontal IS the property for "Resizing" panel in Figma (Fill/Hug/Fixed).
+        
+        // So if this element is a child of a flex row, and has flex-grow: 1, 
+        // Figma needs layoutSizingHorizontal = FILL.
+        // We can't know for sure if parent is row or col here without passing parent context.
+        // However, 'flex-grow' implies filling the main axis.
+        // Since we don't know the axis, we can't definitively set hSizing or vSizing here based on flex-grow alone
+        // without knowing parent direction.
+        
+        // STRICTER RULE: We will rely on 'layoutGrow' being passed to Figma.
+        // The Builder (src/sandbox/builder.ts) applies 'layoutGrow'.
+        // Figma automatically handles the sizing if layoutGrow is set? 
+        // Actually, in Figma, setting layoutGrow = 1 automatically sets primary axis sizing to FILL.
+        // So we just need to ensure layoutGrow is passed. (Done above).
+        
+        // What about align-self: stretch?
+        // If align-self is stretch, counter axis sizing should be FILL.
+        // Again, dependent on parent axis.
+        
+        // HEURISTIC: Standard Web Defaults
+        // If width is NOT fixed px, and it's a block/div, it's usually FILL width.
+        
         // Apply to Node
         if (node.layoutMode === 'HORIZONTAL') {
             node.layoutSizingHorizontal = hSizing;

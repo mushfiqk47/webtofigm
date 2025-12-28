@@ -8,6 +8,11 @@ const MAX_IMAGE_BYTES = 7_500_000; // ~7.5MB guard to avoid huge blobs/base64
  */
 
 export function isHidden(element: HTMLElement, computedStyle: CSSStyleDeclaration): boolean {
+    // 0. Safety: Never hide the root document or body
+    if (element === document.documentElement || element === document.body) {
+        return false;
+    }
+
     // 1. Tag Check
     if (['SCRIPT', 'STYLE', 'NOSCRIPT', 'META', 'LINK', 'TITLE'].includes(element.tagName)) {
         return true;
@@ -63,14 +68,6 @@ export function isHidden(element: HTMLElement, computedStyle: CSSStyleDeclaratio
         // Note: We don't cull 'below' or 'right' because we want the full scrollable page.
         // But things at -9999px are definitely hidden hacky content.
         if (rect.right < 0 || rect.bottom < 0) return true;
-    }
-
-    // 9. Negative Z-Index (Heuristic)
-    // Often used for background hacks or hidden overlays. 
-    // If z-index is negative, it's behind the root stacking context (usually body background).
-    if (computedStyle.zIndex !== 'auto') {
-        const z = parseInt(computedStyle.zIndex);
-        if (z < 0) return true; 
     }
 
     return false;
